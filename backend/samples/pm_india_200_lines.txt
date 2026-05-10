@@ -1,0 +1,200 @@
+001. Narendra Modi is the current Prime Minister of India.
+002. He was sworn in for his third term on 9 June 2024.
+003. The Prime Minister of India is the head of government.
+004. The President of India appoints the Prime Minister.
+005. The Prime Minister must command confidence in the Lok Sabha.
+006. Narendra Modi belongs to the Bharatiya Janata Party.
+007. The Prime Minister leads the Union Council of Ministers.
+008. The Prime Minister advises the President on government work.
+009. The Prime Minister helps coordinate central government ministries.
+010. The Prime Minister represents India in many international meetings.
+011. Narendra Modi first became Prime Minister on 26 May 2014.
+012. His second term began after the 2019 general election.
+013. His third term began after the 2024 general election.
+014. The Prime Minister works from the national capital, New Delhi.
+015. The Prime Minister's Office is often called the PMO.
+016. The PMO supports policy coordination and public communication.
+017. The Prime Minister is responsible to Parliament.
+018. The Lok Sabha is the lower house of Parliament.
+019. The Rajya Sabha is the upper house of Parliament.
+020. The Prime Minister may be a member of either house.
+021. Narendra Modi has represented Varanasi in the Lok Sabha.
+022. Varanasi is a parliamentary constituency in Uttar Pradesh.
+023. The Prime Minister chairs important cabinet meetings.
+024. Cabinet decisions guide national policy implementation.
+025. The Prime Minister allocates portfolios to ministers.
+026. Ministers lead departments such as finance, defence, and education.
+027. The Prime Minister can recommend ministerial changes.
+028. The Prime Minister communicates major national priorities.
+029. National security is one major responsibility of the Union government.
+030. Economic policy is another major responsibility of the Union government.
+031. Infrastructure development is often a central government priority.
+032. Digital governance has been a prominent theme in recent years.
+033. India uses many public digital platforms for services.
+034. The Prime Minister often addresses citizens on national issues.
+035. The Prime Minister attends ceremonies of national importance.
+036. Republic Day is observed in India on 26 January.
+037. Independence Day is observed in India on 15 August.
+038. The Prime Minister traditionally addresses the nation on Independence Day.
+039. The Independence Day address is delivered from the Red Fort.
+040. The Red Fort is located in Delhi.
+041. The Constitution defines the parliamentary system of government.
+042. Article 74 relates to the Council of Ministers.
+043. Article 75 relates to the Prime Minister and ministers.
+044. The Prime Minister is central to cabinet government.
+045. The Council of Ministers aids and advises the President.
+046. The Prime Minister's leadership depends on parliamentary support.
+047. A government can lose office if it loses confidence.
+048. The Prime Minister works with state governments on national programs.
+049. India is a union of states and union territories.
+050. Cooperative federalism describes Centre-state collaboration.
+051. Narendra Modi previously served as Chief Minister of Gujarat.
+052. He served as Gujarat Chief Minister before becoming Prime Minister.
+053. Gujarat is a state in western India.
+054. The Prime Minister's national role differs from a Chief Minister's state role.
+055. A Chief Minister heads a state government.
+056. The Prime Minister heads the central government.
+057. India conducts general elections for the Lok Sabha.
+058. Lok Sabha members are directly elected by citizens.
+059. The party or coalition with majority support forms the government.
+060. The Prime Minister usually leads the majority party or coalition.
+061. Narendra Modi led the BJP in the 2014 national election.
+062. Narendra Modi led the BJP in the 2019 national election.
+063. Narendra Modi led the BJP in the 2024 national election.
+064. The 2024 swearing-in marked the start of his third consecutive term.
+065. Jawaharlal Nehru was India's first Prime Minister.
+066. Jawaharlal Nehru also served three consecutive terms.
+067. Indira Gandhi was India's first and only woman Prime Minister.
+068. Atal Bihari Vajpayee was a former Prime Minister from the BJP.
+069. Manmohan Singh served as Prime Minister before Narendra Modi.
+070. The Prime Minister's tenure is linked to Lok Sabha confidence.
+071. There is no fixed personal term limit for the Prime Minister.
+072. A Lok Sabha term is normally five years unless dissolved earlier.
+073. The Prime Minister recommends dissolution when needed through constitutional process.
+074. The President formally summons and prorogues Parliament.
+075. Parliamentary business is organized through government and house procedures.
+076. The Prime Minister may answer questions or make statements in Parliament.
+077. Ministers answer detailed questions about their departments.
+078. The Union Budget is presented by the Finance Minister.
+079. Budget policy is shaped by the elected government.
+080. The Prime Minister influences broad economic direction.
+081. India's central government manages national defence.
+082. India's central government manages foreign affairs.
+083. India's central government manages currency and central taxation.
+084. The Prime Minister participates in foreign policy decision-making.
+085. Diplomatic visits can include bilateral and multilateral meetings.
+086. The G20 is one major international forum.
+087. BRICS is another major international grouping.
+088. India participates in the United Nations.
+089. The Prime Minister can meet foreign heads of government.
+090. Such meetings can cover trade, security, and technology.
+091. The Prime Minister's official communications appear through PMO channels.
+092. Official speeches and releases are published by government platforms.
+093. Public welfare schemes are often announced by the Union government.
+094. Implementation often involves ministries, states, and local bodies.
+095. Digital India is associated with technology-led governance.
+096. Make in India is associated with manufacturing promotion.
+097. Swachh Bharat Mission focused on sanitation and cleanliness.
+098. Jan Dhan Yojana focused on financial inclusion.
+099. Ujjwala Yojana focused on LPG connections for households.
+100. Ayushman Bharat is associated with health coverage.
+101. The Prime Minister can review progress of major schemes.
+102. Review meetings help track implementation.
+103. Data dashboards are often used for governance monitoring.
+104. The Prime Minister also works with the Cabinet Secretariat.
+105. The Cabinet Secretariat supports coordination across ministries.
+106. The National Security Council system supports security coordination.
+107. The Prime Minister can chair committees of the cabinet.
+108. Cabinet committees handle specialized policy areas.
+109. The Appointments Committee of the Cabinet handles senior appointments.
+110. Senior civil service appointments are important for administration.
+111. Civil servants implement policy under ministerial direction.
+112. The Prime Minister interacts with secretaries and senior officials.
+113. India's administration includes central and state services.
+114. Policy implementation depends on administrative capacity.
+115. Public communication is an important part of leadership.
+116. The Prime Minister's speeches can signal government priorities.
+117. Election campaigns are separate from official governance.
+118. After elections, the Prime Minister governs through constitutional institutions.
+119. The Prime Minister's oath includes office and secrecy.
+120. The oath is administered by the President of India.
+121. Narendra Modi took oath in 2014.
+122. Narendra Modi took oath again in 2019.
+123. Narendra Modi took oath again on 9 June 2024.
+124. The 2024 oath ceremony took place at Rashtrapati Bhavan.
+125. Rashtrapati Bhavan is the official residence of the President.
+126. The Prime Minister's official residence is in New Delhi.
+127. Security for the Prime Minister is handled by specialized agencies.
+128. Official travel follows government protocols.
+129. The Prime Minister may address state legislatures by invitation.
+130. The Prime Minister may participate in national development councils or similar forums.
+131. India has a multi-party democratic system.
+132. Opposition parties scrutinize the government in Parliament.
+133. Parliamentary debate is a core part of democracy.
+134. The Prime Minister must respond to political and public challenges.
+135. Media coverage follows major Prime Ministerial decisions.
+136. Courts can review government actions under constitutional law.
+137. The Supreme Court is India's highest court.
+138. The Prime Minister does not control judicial decisions.
+139. The Election Commission conducts elections independently.
+140. Democratic institutions balance executive power.
+141. The Prime Minister's party organization is separate from the government.
+142. The government acts through ministries and lawful procedures.
+143. The Prime Minister's role combines politics and administration.
+144. Good governance requires coordination, accountability, and delivery.
+145. Citizens evaluate Prime Ministers through elections.
+146. Political support can change between elections.
+147. Coalition politics can affect government decisions.
+148. A majority government can pass legislation more easily.
+149. Legislation still requires parliamentary process.
+150. Bills may be introduced in either house depending on subject.
+151. Money bills have special rules in the Lok Sabha.
+152. The Prime Minister's government proposes many major bills.
+153. Parliamentary committees may examine legislation.
+154. The Prime Minister can set broad legislative priorities.
+155. The Cabinet approves many proposals before introduction.
+156. Federal subjects are divided among Union, State, and Concurrent Lists.
+157. Education includes central and state responsibilities.
+158. Health includes central and state responsibilities.
+159. Defence is a Union subject.
+160. Foreign affairs is a Union subject.
+161. The Prime Minister works with the External Affairs Minister on diplomacy.
+162. The Prime Minister works with the Defence Minister on security issues.
+163. The Prime Minister works with the Home Minister on internal security.
+164. The Prime Minister works with the Finance Minister on economic policy.
+165. Narendra Modi's public image emphasizes development and governance.
+166. His supporters often highlight infrastructure and welfare delivery.
+167. His critics often debate policy choices and political style.
+168. Democratic debate includes both support and criticism.
+169. RAG systems should answer using the supplied document context.
+170. This sample document is intended for testing the Edge app Rag screen.
+171. A good test question is: Who is the current Prime Minister of India?
+172. The expected answer is: Narendra Modi.
+173. Another test question is: When did his third term begin?
+174. The expected answer is: 9 June 2024.
+175. Another test question is: Which party does Narendra Modi belong to?
+176. The expected answer is: Bharatiya Janata Party.
+177. Another test question is: What is the PMO?
+178. The expected answer is: the Prime Minister's Office.
+179. Another test question is: What house gives confidence to the government?
+180. The expected answer is: the Lok Sabha.
+181. The sample repeats key facts to improve retrieval.
+182. Narendra Modi is described here as the current Prime Minister.
+183. Narendra Modi's third term is described as starting on 9 June 2024.
+184. The Prime Minister is described as the head of government.
+185. The President is described as appointing the Prime Minister.
+186. The Lok Sabha is described as central to confidence.
+187. The Council of Ministers is described as led by the Prime Minister.
+188. The PMO is described as supporting the Prime Minister.
+189. New Delhi is described as the seat of central government activity.
+190. Parliament is described as the place of accountability.
+191. Cabinet meetings are described as important for decision-making.
+192. Ministries are described as responsible for implementation.
+193. Public schemes are described as part of government delivery.
+194. Foreign policy is described as one Prime Ministerial responsibility.
+195. National security is described as another Prime Ministerial responsibility.
+196. Economic policy is described as another major responsibility.
+197. The sample is plain text so PrivateGPT can ingest it easily.
+198. The sample contains exactly 200 numbered lines.
+199. The Edge app can ingest this sample through the PM sample button.
+200. After ingestion, ask questions about Narendra Modi and the Prime Minister of India.
