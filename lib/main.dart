@@ -88,9 +88,9 @@ class ModelDownloadCoordinator {
 
   static const channel = MethodChannel('edge/model_downloader');
   static const modelUrl =
-      'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf';
-  static const modelFileName = 'qwen2.5-3b-instruct-q4_k_m.gguf';
-  static const minimumReadyBytes = 1800 * 1024 * 1024;
+      'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf';
+  static const modelFileName = 'qwen2.5-1.5b-instruct-q4_k_m.gguf';
+  static const minimumReadyBytes = 1000 * 1024 * 1024;
 
   final VoidCallback? onChanged;
   Timer? _pollTimer;
@@ -265,9 +265,9 @@ class _AiPreparationScreenState extends State<AiPreparationScreen>
     with SingleTickerProviderStateMixin {
   static const _channel = MethodChannel('edge/model_downloader');
   static const _modelUrl =
-      'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf';
-  static const _modelFileName = 'qwen2.5-3b-instruct-q4_k_m.gguf';
-  static const _minimumReadyBytes = 1800 * 1024 * 1024;
+      'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf';
+  static const _modelFileName = 'qwen2.5-1.5b-instruct-q4_k_m.gguf';
+  static const _minimumReadyBytes = 1000 * 1024 * 1024;
 
   late final AnimationController _animationController;
   Timer? _pollTimer;
@@ -1522,10 +1522,10 @@ class PickedRagFile {
 
 class OfflineQwenService {
   static const _channel = MethodChannel('edge/model_downloader');
-  static const _modelFileName = 'qwen2.5-3b-instruct-q4_k_m.gguf';
-  static const _minimumReadyBytes = 1900 * 1024 * 1024;
-  static const _minimumTotalMemoryBytes = 5 * 1024 * 1024 * 1024;
-  static const _minimumAvailableMemoryBytes = 2600 * 1024 * 1024;
+  static const _modelFileName = 'qwen2.5-1.5b-instruct-q4_k_m.gguf';
+  static const _minimumReadyBytes = 1000 * 1024 * 1024;
+  static const _minimumTotalMemoryBytes = 3 * 1024 * 1024 * 1024;
+  static const _minimumAvailableMemoryBytes = 900 * 1024 * 1024;
 
   final LlamaController _controller = LlamaController();
   Future<void>? _loadFuture;
@@ -1552,7 +1552,7 @@ class OfflineQwenService {
         ),
       ],
       temperature: 0.2,
-      maxTokens: 180,
+      maxTokens: 120,
     );
   }
 
@@ -1567,7 +1567,7 @@ class OfflineQwenService {
         ChatMessage(role: 'user', content: question),
       ],
       temperature: 0.6,
-      maxTokens: 220,
+      maxTokens: 140,
     );
   }
 
@@ -1627,8 +1627,8 @@ class OfflineQwenService {
       await _validateRuntimeDevice();
       await _controller.loadModel(
         modelPath: modelPath,
-        threads: 1,
-        contextSize: 768,
+        threads: 2,
+        contextSize: 512,
         gpuLayers: 0,
       ).timeout(const Duration(minutes: 3));
       _loaded = true;
@@ -1685,7 +1685,7 @@ class OfflineQwenService {
 
     if (isEmulator) {
       throw Exception(
-        'Offline Qwen 3B is blocked on emulator because native llama loading can close the app. Test it on a real ARM64 phone or use a smaller GGUF.',
+        'Offline Qwen is blocked on emulator because native llama loading can close the app. Test it on a real ARM64 phone.',
       );
     }
 
@@ -1697,13 +1697,13 @@ class OfflineQwenService {
 
     if (totalMemory > 0 && totalMemory < _minimumTotalMemoryBytes) {
       throw Exception(
-        'Device RAM is too low for Qwen 3B. Use a smaller model or a phone with at least 6 GB RAM.',
+        'Device RAM is too low for Qwen 1.5B. Use a phone with at least 4 GB RAM.',
       );
     }
 
     if (availableMemory > 0 && availableMemory < _minimumAvailableMemoryBytes) {
       throw Exception(
-        'Not enough free RAM to load Qwen 3B. Close other apps and try again, or use a smaller model.',
+        'Not enough free RAM to load Qwen 1.5B. Close other apps and try again.',
       );
     }
   }
