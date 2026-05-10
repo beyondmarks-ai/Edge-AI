@@ -761,7 +761,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     text: AttendanceApiClient.defaultBaseUrl,
   );
   final _rtspController = TextEditingController(
-    text: 'rtsp://admin:admin@192.168.1.3:1935',
+    text: 'rtsp://admin:admin@192.168.1.9:1935',
   );
   Timer? _feedTimer;
   int _feedTick = 0;

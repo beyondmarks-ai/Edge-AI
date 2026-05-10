@@ -45,7 +45,7 @@ ATTENDANCE_RECORDS_PATH = DATA_DIR / "attendance_records.json"
 ATTENDANCE_MATCH_THRESHOLD = float(os.getenv("ATTENDANCE_MATCH_THRESHOLD", "0.86"))
 ATTENDANCE_RTSP_URL = os.getenv(
     "ATTENDANCE_RTSP_URL",
-    "rtsp://admin:admin@192.168.1.3:1935",
+    "rtsp://admin:admin@192.168.1.9:1935",
 )
 ATTENDANCE_BIOMETRIC_CONSENT = (
     os.getenv("ATTENDANCE_BIOMETRIC_CONSENT", "true").lower()
