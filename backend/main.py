@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Counter as CounterType, Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
@@ -21,10 +21,16 @@ except ImportError:
 
 try:
     import pytesseract
-    from PIL import Image
+    from PIL import Image, ImageOps
 except ImportError:
     pytesseract = None
     Image = None
+    ImageOps = None
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 
 PRIVATE_GPT_URL = os.getenv("PRIVATE_GPT_URL", "http://localhost:8001").rstrip("/")
@@ -33,6 +39,18 @@ BASE_DIR = Path(__file__).resolve().parent
 PM_SAMPLE_PATH = BASE_DIR / "samples" / "pm_india_200_lines.txt"
 DATA_DIR = BASE_DIR / "data"
 LOCAL_STORE_PATH = DATA_DIR / "local_rag_store.json"
+ATTENDANCE_IMAGE_DIR = Path(os.getenv("ATTENDANCE_IMAGE_DIR", BASE_DIR.parent / "Img"))
+ATTENDANCE_STORE_PATH = DATA_DIR / "attendance_embeddings.json"
+ATTENDANCE_RECORDS_PATH = DATA_DIR / "attendance_records.json"
+ATTENDANCE_MATCH_THRESHOLD = float(os.getenv("ATTENDANCE_MATCH_THRESHOLD", "0.86"))
+ATTENDANCE_RTSP_URL = os.getenv(
+    "ATTENDANCE_RTSP_URL",
+    "rtsp://admin:admin@192.168.1.3:1935",
+)
+ATTENDANCE_BIOMETRIC_CONSENT = (
+    os.getenv("ATTENDANCE_BIOMETRIC_CONSENT", "true").lower()
+    in {"1", "true", "yes", "on"}
+)
 CHUNK_WORDS = int(os.getenv("RAG_CHUNK_WORDS", "220"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "45"))
 OCR_DPI = int(os.getenv("RAG_OCR_DPI", "220"))
@@ -58,6 +76,16 @@ class IngestTextRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
+
+
+class AttendanceMarkRequest(BaseModel):
+    student_id: str = Field(min_length=1)
+    method: str = "manual"
+    confidence: Optional[float] = None
+
+
+class AttendanceStreamConfigRequest(BaseModel):
+    rtsp_url: str = Field(min_length=1)
 
 
 @app.get("/health")
@@ -240,6 +268,260 @@ async def chat(request: ChatRequest) -> Dict[str, Any]:
     sources = _source_ids(choice)
 
     return {"mode": "private_gpt", "answer": answer, "sources": sources, "raw": response}
+
+
+@app.get("/attendance/status")
+async def attendance_status() -> Dict[str, Any]:
+    store = _load_attendance_store()
+    return {
+        "image_dir": str(ATTENDANCE_IMAGE_DIR),
+        "image_dir_exists": ATTENDANCE_IMAGE_DIR.exists(),
+        "embedding_store": str(ATTENDANCE_STORE_PATH),
+        "embedding_store_exists": ATTENDANCE_STORE_PATH.exists(),
+        "biometric_consent_enabled": ATTENDANCE_BIOMETRIC_CONSENT,
+        "match_threshold": ATTENDANCE_MATCH_THRESHOLD,
+        "students": store.get("students", []),
+        "student_count": len(store.get("students", [])),
+        "image_count": len(_attendance_image_files()),
+        "model": "local_image_embedding_v1",
+        "rtsp_url": _attendance_rtsp_url(),
+        "opencv_available": cv2 is not None,
+    }
+
+
+@app.post("/attendance/build-embeddings")
+async def build_attendance_embeddings() -> Dict[str, Any]:
+    if Image is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Pillow is required for attendance embeddings. Install backend requirements.",
+        )
+
+    files = _attendance_image_files()
+    if not files:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No student images found in {ATTENDANCE_IMAGE_DIR}.",
+        )
+
+    grouped: Dict[str, Dict[str, Any]] = {}
+    skipped: List[Dict[str, str]] = []
+
+    for image_path in files:
+        student_name = _student_name_from_file(image_path)
+        student_id = _safe_id(student_name)
+
+        try:
+            embedding = _image_embedding(image_path.read_bytes())
+        except Exception as exc:
+            skipped.append({"file": image_path.name, "error": str(exc)})
+            continue
+
+        group = grouped.setdefault(
+            student_id,
+            {
+                "student_id": student_id,
+                "name": student_name,
+                "images": [],
+                "embeddings": [],
+            },
+        )
+        group["images"].append(image_path.name)
+        group["embeddings"].append(embedding)
+
+    students: List[Dict[str, Any]] = []
+    for group in grouped.values():
+        representative = _mean_embedding(group["embeddings"])
+        students.append(
+            {
+                "student_id": group["student_id"],
+                "name": group["name"],
+                "image_count": len(group["images"]),
+                "images": group["images"],
+                "embedding": representative,
+            }
+        )
+
+    students.sort(key=lambda item: str(item["name"]).lower())
+    store = {
+        "model": "local_image_embedding_v1",
+        "image_dir": str(ATTENDANCE_IMAGE_DIR),
+        "match_threshold": ATTENDANCE_MATCH_THRESHOLD,
+        "students": students,
+        "skipped": skipped,
+    }
+    _save_attendance_store(store)
+
+    return {
+        "student_count": len(students),
+        "image_count": sum(student["image_count"] for student in students),
+        "students": [
+            {
+                "student_id": student["student_id"],
+                "name": student["name"],
+                "image_count": student["image_count"],
+            }
+            for student in students
+        ],
+        "skipped": skipped,
+        "message": "Attendance embeddings built locally.",
+    }
+
+
+@app.post("/attendance/match-file")
+async def match_attendance_file(file: UploadFile = File(...)) -> Dict[str, Any]:
+    if not ATTENDANCE_BIOMETRIC_CONSENT:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Biometric attendance matching is disabled. Set "
+                "ATTENDANCE_BIOMETRIC_CONSENT=true only for a consented, "
+                "local prototype."
+            ),
+        )
+
+    store = _load_attendance_store()
+    students = store.get("students", [])
+    if not students:
+        raise HTTPException(
+            status_code=400,
+            detail="Build attendance embeddings before matching.",
+        )
+
+    content = await file.read()
+    query_embedding = _image_embedding(content)
+    matches = _attendance_matches(query_embedding, students)
+    best = matches[0] if matches else None
+
+    if best is None or best["score"] < ATTENDANCE_MATCH_THRESHOLD:
+        return {
+            "matched": False,
+            "threshold": ATTENDANCE_MATCH_THRESHOLD,
+            "best_match": best,
+            "message": "No confident student match.",
+        }
+
+    record = _mark_attendance(
+        student_id=best["student_id"],
+        name=best["name"],
+        method="image_match",
+        confidence=best["score"],
+    )
+
+    return {
+        "matched": True,
+        "threshold": ATTENDANCE_MATCH_THRESHOLD,
+        "best_match": best,
+        "top_matches": matches[:3],
+        "attendance": record,
+    }
+
+
+@app.post("/attendance/mark")
+async def mark_attendance(request: AttendanceMarkRequest) -> Dict[str, Any]:
+    store = _load_attendance_store()
+    students = store.get("students", [])
+    student = next(
+        (
+            item
+            for item in students
+            if item.get("student_id") == request.student_id
+        ),
+        None,
+    )
+    if student is None:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    record = _mark_attendance(
+        student_id=str(student["student_id"]),
+        name=str(student["name"]),
+        method=request.method,
+        confidence=request.confidence,
+    )
+    return {"attendance": record}
+
+
+@app.get("/attendance/records")
+async def attendance_records() -> Dict[str, Any]:
+    return _load_attendance_records()
+
+
+@app.get("/attendance/stream/status")
+async def attendance_stream_status() -> Dict[str, Any]:
+    return {
+        "rtsp_url": _attendance_rtsp_url(),
+        "opencv_available": cv2 is not None,
+        "ready": cv2 is not None and bool(_attendance_rtsp_url()),
+    }
+
+
+@app.post("/attendance/stream/config")
+async def attendance_stream_config(
+    request: AttendanceStreamConfigRequest,
+) -> Dict[str, Any]:
+    _save_attendance_stream_config(request.rtsp_url.strip())
+    return await attendance_stream_status()
+
+
+@app.get("/attendance/stream/frame")
+async def attendance_stream_frame() -> Response:
+    frame = _read_rtsp_frame()
+    jpeg = _encode_frame_jpeg(frame)
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/attendance/stream/check")
+async def attendance_stream_check() -> Dict[str, Any]:
+    if not ATTENDANCE_BIOMETRIC_CONSENT:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Biometric attendance matching is disabled. Set "
+                "ATTENDANCE_BIOMETRIC_CONSENT=true only for a consented, "
+                "local prototype."
+            ),
+        )
+
+    store = _load_attendance_store()
+    students = store.get("students", [])
+    if not students:
+        raise HTTPException(
+            status_code=400,
+            detail="Build attendance embeddings before checking the RTSP feed.",
+        )
+
+    frame = _read_rtsp_frame()
+    jpeg = _encode_frame_jpeg(frame)
+    query_embedding = _image_embedding(jpeg)
+    matches = _attendance_matches(query_embedding, students)
+    best = matches[0] if matches else None
+
+    if best is None or best["score"] < ATTENDANCE_MATCH_THRESHOLD:
+        return {
+            "matched": False,
+            "threshold": ATTENDANCE_MATCH_THRESHOLD,
+            "best_match": best,
+            "top_matches": matches[:3],
+            "message": "No confident student match in current camera frame.",
+        }
+
+    record = _mark_attendance(
+        student_id=best["student_id"],
+        name=best["name"],
+        method="rtsp_stream",
+        confidence=best["score"],
+    )
+    return {
+        "matched": True,
+        "threshold": ATTENDANCE_MATCH_THRESHOLD,
+        "best_match": best,
+        "top_matches": matches[:3],
+        "attendance": record,
+    }
 
 
 async def _private_gpt_request(
@@ -460,6 +742,250 @@ def _load_local_store() -> Dict[str, Any]:
 def _save_local_store(store: Dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOCAL_STORE_PATH.write_text(json.dumps(store, indent=2), encoding="utf-8")
+
+
+def _load_attendance_store() -> Dict[str, Any]:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not ATTENDANCE_STORE_PATH.exists():
+        return {"students": []}
+
+    try:
+        data = json.loads(ATTENDANCE_STORE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"students": []}
+
+    if isinstance(data, dict) and isinstance(data.get("students"), list):
+        return data
+
+    return {"students": []}
+
+
+def _save_attendance_store(store: Dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ATTENDANCE_STORE_PATH.write_text(
+        json.dumps(store, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_attendance_records() -> Dict[str, Any]:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not ATTENDANCE_RECORDS_PATH.exists():
+        return {"records": []}
+
+    try:
+        data = json.loads(ATTENDANCE_RECORDS_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"records": []}
+
+    if isinstance(data, dict) and isinstance(data.get("records"), list):
+        return data
+
+    return {"records": []}
+
+
+def _save_attendance_records(records: Dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ATTENDANCE_RECORDS_PATH.write_text(
+        json.dumps(records, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _attendance_stream_config_path() -> Path:
+    return DATA_DIR / "attendance_stream.json"
+
+
+def _attendance_rtsp_url() -> str:
+    path = _attendance_stream_config_path()
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            url = data.get("rtsp_url")
+            if isinstance(url, str) and url.strip():
+                return url.strip()
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return ATTENDANCE_RTSP_URL
+
+
+def _save_attendance_stream_config(rtsp_url: str) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _attendance_stream_config_path().write_text(
+        json.dumps({"rtsp_url": rtsp_url}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _read_rtsp_frame() -> Any:
+    if cv2 is None:
+        raise HTTPException(
+            status_code=500,
+            detail="OpenCV is required for RTSP. Install opencv-python.",
+        )
+
+    url = _attendance_rtsp_url()
+    if not url:
+        raise HTTPException(status_code=400, detail="RTSP URL is not set.")
+
+    capture = cv2.VideoCapture(url)
+    try:
+        if not capture.isOpened():
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not open RTSP stream: {url}",
+            )
+
+        frame = None
+        for _ in range(6):
+            ok, candidate = capture.read()
+            if ok and candidate is not None:
+                frame = candidate
+
+        if frame is None:
+            raise HTTPException(
+                status_code=502,
+                detail="RTSP stream opened but no frame was received.",
+            )
+
+        return frame
+    finally:
+        capture.release()
+
+
+def _encode_frame_jpeg(frame: Any) -> bytes:
+    if cv2 is None:
+        raise HTTPException(status_code=500, detail="OpenCV is not installed.")
+
+    ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+    if not ok:
+        raise HTTPException(status_code=500, detail="Could not encode frame.")
+
+    return bytes(buffer)
+
+
+def _attendance_image_files() -> List[Path]:
+    if not ATTENDANCE_IMAGE_DIR.exists():
+        return []
+
+    supported = {".jpg", ".jpeg", ".png", ".webp"}
+    return sorted(
+        [
+            path
+            for path in ATTENDANCE_IMAGE_DIR.iterdir()
+            if path.is_file() and path.suffix.lower() in supported
+        ],
+        key=lambda path: path.name.lower(),
+    )
+
+
+def _student_name_from_file(path: Path) -> str:
+    name = path.stem.replace("_", " ").replace("-", " ").strip()
+    name = re.sub(r"\s*\d+$", "", name).strip()
+    return name or path.stem
+
+
+def _image_embedding(content: bytes) -> List[float]:
+    if Image is None:
+        raise ValueError("Pillow is not installed.")
+
+    with Image.open(BytesIO(content)) as image:
+        if ImageOps is not None:
+            image = ImageOps.exif_transpose(image)
+
+        rgb = image.convert("RGB").resize((32, 32))
+        gray = rgb.convert("L")
+        features = [((pixel / 255.0) - 0.5) * 2.0 for pixel in gray.getdata()]
+
+        for channel in rgb.split():
+            histogram = channel.histogram()
+            total = float(sum(histogram)) or 1.0
+            for index in range(8):
+                start = index * 32
+                end = start + 32
+                features.append(sum(histogram[start:end]) / total)
+
+    return _normalize_embedding(features)
+
+
+def _normalize_embedding(values: List[float]) -> List[float]:
+    norm = math.sqrt(sum(value * value for value in values)) or 1.0
+    return [round(value / norm, 8) for value in values]
+
+
+def _mean_embedding(embeddings: List[List[float]]) -> List[float]:
+    if not embeddings:
+        return []
+
+    length = len(embeddings[0])
+    values = [
+        sum(embedding[index] for embedding in embeddings) / len(embeddings)
+        for index in range(length)
+    ]
+    return _normalize_embedding(values)
+
+
+def _cosine_similarity(left: List[float], right: List[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+
+    return sum(a * b for a, b in zip(left, right))
+
+
+def _attendance_matches(
+    query_embedding: List[float],
+    students: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    matches: List[Dict[str, Any]] = []
+
+    for student in students:
+        embedding = student.get("embedding")
+        if not isinstance(embedding, list):
+            continue
+
+        score = _cosine_similarity(
+            query_embedding,
+            [float(value) for value in embedding],
+        )
+        matches.append(
+            {
+                "student_id": student.get("student_id"),
+                "name": student.get("name"),
+                "score": round(score, 4),
+                "confidence": round(max(0.0, min(score, 1.0)) * 100, 2),
+            }
+        )
+
+    matches.sort(key=lambda item: float(item["score"]), reverse=True)
+    return matches
+
+
+def _mark_attendance(
+    student_id: str,
+    name: str,
+    method: str,
+    confidence: Optional[float],
+) -> Dict[str, Any]:
+    records = _load_attendance_records()
+    record = {
+        "student_id": student_id,
+        "name": name,
+        "method": method,
+        "confidence": confidence,
+        "timestamp": _utc_timestamp(),
+    }
+    records.setdefault("records", []).append(record)
+    _save_attendance_records(records)
+    return record
+
+
+def _utc_timestamp() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _local_ingest_text(file_name: str, text: str) -> Dict[str, Any]:

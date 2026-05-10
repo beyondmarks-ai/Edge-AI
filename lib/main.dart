@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -758,6 +757,19 @@ class _DashboardScreenState extends State<DashboardScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _animationController;
   late final ModelDownloadCoordinator _modelCoordinator;
+  final _attendanceBackendController = TextEditingController(
+    text: AttendanceApiClient.defaultBaseUrl,
+  );
+  final _rtspController = TextEditingController(
+    text: 'rtsp://admin:admin@192.168.1.3:1935',
+  );
+  Timer? _feedTimer;
+  int _feedTick = 0;
+  String? _streamMessage;
+  bool _isSavingStream = false;
+
+  AttendanceApiClient get _attendanceClient =>
+      AttendanceApiClient(_attendanceBackendController.text.trim());
 
   @override
   void initState() {
@@ -776,13 +788,46 @@ class _DashboardScreenState extends State<DashboardScreen>
       },
     );
     unawaited(_modelCoordinator.refresh());
+    _feedTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (mounted) {
+        setState(() => _feedTick++);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _feedTimer?.cancel();
+    _attendanceBackendController.dispose();
+    _rtspController.dispose();
     _modelCoordinator.dispose();
     _animationController.dispose();
     super.dispose();
+  }
+
+  Future<void> _saveStreamConfig() async {
+    setState(() {
+      _isSavingStream = true;
+      _streamMessage = null;
+    });
+
+    try {
+      await _attendanceClient.setStreamConfig(_rtspController.text.trim());
+      if (mounted) {
+        setState(() {
+          _streamMessage = 'RTSP stream connected.';
+          _feedTick++;
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _streamMessage = 'RTSP setup failed: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSavingStream = false);
+      }
+    }
   }
 
   @override
@@ -793,6 +838,12 @@ class _DashboardScreenState extends State<DashboardScreen>
       child: DashboardSetupPanel(
         animation: _animationController,
         coordinator: _modelCoordinator,
+        backendController: _attendanceBackendController,
+        rtspController: _rtspController,
+        streamMessage: _streamMessage,
+        isSavingStream: _isSavingStream,
+        feedUrl: _attendanceClient.streamFrameUrl(_feedTick),
+        onSaveStream: _saveStreamConfig,
       ),
     );
   }
@@ -803,10 +854,22 @@ class DashboardSetupPanel extends StatelessWidget {
     super.key,
     required this.animation,
     required this.coordinator,
+    required this.backendController,
+    required this.rtspController,
+    required this.streamMessage,
+    required this.isSavingStream,
+    required this.feedUrl,
+    required this.onSaveStream,
   });
 
   final Animation<double> animation;
   final ModelDownloadCoordinator coordinator;
+  final TextEditingController backendController;
+  final TextEditingController rtspController;
+  final String? streamMessage;
+  final bool isSavingStream;
+  final String feedUrl;
+  final VoidCallback onSaveStream;
 
   @override
   Widget build(BuildContext context) {
@@ -959,6 +1022,127 @@ class DashboardSetupPanel extends StatelessWidget {
             description:
                 'Upload study files in Rag, prepare offline AI here, and use the assistant with or without backend support.',
           ),
+          const SizedBox(height: 18),
+          _RtspDashboardPanel(
+            backendController: backendController,
+            rtspController: rtspController,
+            streamMessage: streamMessage,
+            isSavingStream: isSavingStream,
+            feedUrl: feedUrl,
+            onSaveStream: onSaveStream,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RtspDashboardPanel extends StatelessWidget {
+  const _RtspDashboardPanel({
+    required this.backendController,
+    required this.rtspController,
+    required this.streamMessage,
+    required this.isSavingStream,
+    required this.feedUrl,
+    required this.onSaveStream,
+  });
+
+  final TextEditingController backendController;
+  final TextEditingController rtspController;
+  final String? streamMessage;
+  final bool isSavingStream;
+  final String feedUrl;
+  final VoidCallback onSaveStream;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4FBF6),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFD8EBDD)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.videocam_outlined, color: Color(0xFF16833B)),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Attendance camera',
+                  style: TextStyle(
+                    color: Color(0xFF123D22),
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          AspectRatio(
+            aspectRatio: 16 / 9,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                color: Colors.black,
+                child: Image.network(
+                  feedUrl,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                  errorBuilder: (context, error, stackTrace) {
+                    return const Center(
+                      child: Text(
+                        'Live feed unavailable',
+                        style: TextStyle(color: Colors.white70),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: rtspController,
+            decoration: const InputDecoration(
+              labelText: 'RTSP URL',
+              prefixIcon: Icon(Icons.link_outlined),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: backendController,
+            decoration: const InputDecoration(
+              labelText: 'Python backend URL',
+              prefixIcon: Icon(Icons.dns_outlined),
+            ),
+          ),
+          if (streamMessage != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              streamMessage!,
+              style: const TextStyle(color: Color(0xFF52685A)),
+            ),
+          ],
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            onPressed: isSavingStream ? null : onSaveStream,
+            icon: isSavingStream
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.settings_input_antenna_rounded),
+            label: Text(isSavingStream ? 'Connecting...' : 'Connect RTSP'),
+          ),
         ],
       ),
     );
@@ -982,21 +1166,433 @@ String _formatBytes(int bytes) {
   return '${size.toStringAsFixed(unitIndex == 0 ? 0 : 2)} ${units[unitIndex]}';
 }
 
-class AttendenceScreen extends StatelessWidget {
+class AttendenceScreen extends StatefulWidget {
   const AttendenceScreen({super.key});
 
   static const routeName = '/attendence';
 
   @override
+  State<AttendenceScreen> createState() => _AttendenceScreenState();
+}
+
+class _AttendenceScreenState extends State<AttendenceScreen> {
+  static const _filePickerChannel = MethodChannel('edge/file_picker');
+
+  final _backendController = TextEditingController(
+    text: AttendanceApiClient.defaultBaseUrl,
+  );
+  Map<String, dynamic>? _status;
+  List<dynamic> _records = [];
+  String? _message;
+  bool _isLoading = false;
+  bool _isBuilding = false;
+  bool _isMatching = false;
+  bool _isCheckingStream = false;
+
+  AttendanceApiClient get _client =>
+      AttendanceApiClient(_backendController.text.trim());
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_refresh());
+  }
+
+  @override
+  void dispose() {
+    _backendController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _isLoading = true;
+      _message = null;
+    });
+
+    try {
+      final status = await _client.status();
+      final records = await _client.records();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _status = status;
+        _records = records;
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Backend error: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Future<void> _buildEmbeddings() async {
+    setState(() {
+      _isBuilding = true;
+      _message = null;
+    });
+
+    try {
+      final result = await _client.buildEmbeddings();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _message =
+            'Built embeddings for ${result['student_count']} student(s).';
+      });
+      await _refresh();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Embedding build failed: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isBuilding = false);
+      }
+    }
+  }
+
+  Future<void> _matchImage() async {
+    if (_isMatching) {
+      return;
+    }
+
+    try {
+      final result = await _filePickerChannel.invokeMapMethod<String, dynamic>(
+        'pickFile',
+      );
+      if (result == null) {
+        return;
+      }
+
+      final bytes = result['bytes'];
+      final name = result['name'];
+      if (bytes is! Uint8List || name is! String) {
+        return;
+      }
+
+      setState(() {
+        _isMatching = true;
+        _message = null;
+      });
+
+      final match = await _client.matchFile(PickedRagFile(name: name, bytes: bytes));
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _message = match['matched'] == true
+            ? 'Marked present: ${match['best_match']?['name']}'
+            : match['message']?.toString() ?? 'No confident match.';
+      });
+      await _refresh();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Attendance scan failed: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isMatching = false);
+      }
+    }
+  }
+
+  Future<void> _checkStreamAttendance() async {
+    setState(() {
+      _isCheckingStream = true;
+      _message = null;
+    });
+
+    try {
+      final match = await _client.checkStream();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _message = match['matched'] == true
+            ? 'Marked present: ${match['best_match']?['name']}'
+            : match['message']?.toString() ?? 'No confident match.';
+      });
+      await _refresh();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Camera check failed: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isCheckingStream = false);
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return const AppShell(
+    final status = _status;
+    final students = status?['students'] is List
+        ? status!['students'] as List<dynamic>
+        : const <dynamic>[];
+
+    return AppShell(
       title: 'Attendence',
-      selectedRoute: routeName,
-      child: FeaturePanel(
-        icon: Icons.fact_check_outlined,
-        title: 'Attendence',
-        description:
-            'Track daily presence, class records, and status updates here.',
+      selectedRoute: AttendenceScreen.routeName,
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _AttendanceSummaryCard(
+              isLoading: _isLoading,
+              status: status,
+              message: _message,
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _isBuilding ? null : _buildEmbeddings,
+                    icon: _isBuilding
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.auto_fix_high_rounded),
+                    label: Text(
+                      _isBuilding ? 'Building...' : 'Build embeddings',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _isMatching ? null : _matchImage,
+                    icon: _isMatching
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.person_search_rounded),
+                    label: Text(_isMatching ? 'Scanning...' : 'Scan image'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            ElevatedButton.icon(
+              onPressed: _isCheckingStream ? null : _checkStreamAttendance,
+              icon: _isCheckingStream
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.videocam_rounded),
+              label: Text(
+                _isCheckingStream
+                    ? 'Checking camera...'
+                    : 'Check attendance from camera',
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _backendController,
+              decoration: const InputDecoration(
+                labelText: 'Python backend URL',
+                prefixIcon: Icon(Icons.link_outlined),
+              ),
+            ),
+            const SizedBox(height: 18),
+            _AttendanceStudentsList(students: students),
+            const SizedBox(height: 18),
+            _AttendanceRecordsList(records: _records),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AttendanceSummaryCard extends StatelessWidget {
+  const _AttendanceSummaryCard({
+    required this.isLoading,
+    required this.status,
+    required this.message,
+  });
+
+  final bool isLoading;
+  final Map<String, dynamic>? status;
+  final String? message;
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    final consent = status?['biometric_consent_enabled'] == true;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4FBF6),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFD8EBDD)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.fact_check_outlined, color: primary, size: 32),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  isLoading ? 'Checking attendance backend...' : 'Attendance',
+                  style: const TextStyle(
+                    color: Color(0xFF123D22),
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Students: ${status?['student_count'] ?? 0}  |  Images: ${status?['image_count'] ?? 0}',
+            style: const TextStyle(
+              color: Color(0xFF123D22),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            consent
+                ? 'Image matching is enabled for this local prototype.'
+                : 'Image matching is disabled until consent is enabled on the backend.',
+            style: TextStyle(
+              color: consent ? const Color(0xFF16833B) : const Color(0xFFB3261E),
+            ),
+          ),
+          if (message != null) ...[
+            const SizedBox(height: 10),
+            Text(message!, style: const TextStyle(color: Color(0xFF52685A))),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AttendanceStudentsList extends StatelessWidget {
+  const _AttendanceStudentsList({required this.students});
+
+  final List<dynamic> students;
+
+  @override
+  Widget build(BuildContext context) {
+    return _AttendanceSection(
+      title: 'Students',
+      emptyText: 'No embeddings yet. Tap Build embeddings.',
+      children: [
+        for (final student in students)
+          ListTile(
+            leading: const Icon(Icons.person_outline_rounded),
+            title: Text(student['name']?.toString() ?? 'Student'),
+            subtitle: Text('${student['image_count'] ?? 0} image(s)'),
+            dense: true,
+          ),
+      ],
+    );
+  }
+}
+
+class _AttendanceRecordsList extends StatelessWidget {
+  const _AttendanceRecordsList({required this.records});
+
+  final List<dynamic> records;
+
+  @override
+  Widget build(BuildContext context) {
+    return _AttendanceSection(
+      title: 'Records',
+      emptyText: 'No attendance marked yet.',
+      children: [
+        for (final record in records.reversed.take(20))
+          ListTile(
+            leading: const Icon(Icons.check_circle_outline_rounded),
+            title: Text(record['name']?.toString() ?? 'Student'),
+            subtitle: Text(record['timestamp']?.toString() ?? ''),
+            trailing: Text(
+              record['confidence'] == null
+                  ? record['method']?.toString() ?? ''
+                  : '${((record['confidence'] as num) * 100).toStringAsFixed(1)}%',
+            ),
+            dense: true,
+          ),
+      ],
+    );
+  }
+}
+
+class _AttendanceSection extends StatelessWidget {
+  const _AttendanceSection({
+    required this.title,
+    required this.emptyText,
+    required this.children,
+  });
+
+  final String title;
+  final String emptyText;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFD8EBDD)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+            child: Text(
+              title,
+              style: const TextStyle(
+                color: Color(0xFF123D22),
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          if (children.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Text(
+                emptyText,
+                style: const TextStyle(color: Color(0xFF5D7465)),
+              ),
+            )
+          else
+            ...children,
+        ],
       ),
     );
   }
@@ -1375,7 +1971,7 @@ class RagWorkspace extends StatelessWidget {
             ),
             child: ListView.separated(
               itemCount: messages.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              separatorBuilder: (_, index) => const SizedBox(height: 10),
               itemBuilder: (context, index) {
                 return RagMessageBubble(message: messages[index]);
               },
@@ -1518,6 +2114,219 @@ class PickedRagFile {
 
   final String name;
   final Uint8List bytes;
+}
+
+class AttendanceApiClient {
+  AttendanceApiClient(this.baseUrl);
+
+  static const defaultBaseUrl = 'http://192.168.1.8:8000';
+
+  final String baseUrl;
+
+  Future<Map<String, dynamic>> status() async {
+    return _get('/attendance/status');
+  }
+
+  Future<Map<String, dynamic>> buildEmbeddings() async {
+    return _post('/attendance/build-embeddings', {});
+  }
+
+  Future<List<dynamic>> records() async {
+    final payload = await _get('/attendance/records');
+    final records = payload['records'];
+    return records is List ? records : const [];
+  }
+
+  Future<Map<String, dynamic>> setStreamConfig(String rtspUrl) async {
+    return _post('/attendance/stream/config', {'rtsp_url': rtspUrl});
+  }
+
+  Future<Map<String, dynamic>> checkStream() async {
+    return _post('/attendance/stream/check', {});
+  }
+
+  String streamFrameUrl(int tick) {
+    final base = _candidateBaseUrls().first;
+    return '$base/attendance/stream/frame?t=$tick';
+  }
+
+  Future<Map<String, dynamic>> matchFile(PickedRagFile file) async {
+    final boundary = 'edge-attendance-${DateTime.now().microsecondsSinceEpoch}';
+    Object? lastError;
+
+    for (final candidate in _candidateBaseUrls()) {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
+      final uri = Uri.parse('$candidate/attendance/match-file');
+
+      try {
+        final request = await client
+            .postUrl(uri)
+            .timeout(const Duration(seconds: 3));
+        request.headers.set(
+          HttpHeaders.contentTypeHeader,
+          'multipart/form-data; boundary=$boundary',
+        );
+        request.add(utf8.encode('--$boundary\r\n'));
+        request.add(
+          utf8.encode(
+            'Content-Disposition: form-data; name="file"; filename="${file.name}"\r\n',
+          ),
+        );
+        request.add(utf8.encode('Content-Type: image/jpeg\r\n\r\n'));
+        request.add(file.bytes);
+        request.add(utf8.encode('\r\n--$boundary--\r\n'));
+
+        final response = await request.close().timeout(
+          const Duration(seconds: 20),
+        );
+        final text = await response.transform(utf8.decoder).join();
+        final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+
+        if (response.statusCode >= 400) {
+          final detail = decoded is Map ? decoded['detail'] : text;
+          lastError = Exception(detail ?? 'HTTP ${response.statusCode}');
+          continue;
+        }
+
+        if (decoded is Map<String, dynamic>) {
+          return decoded;
+        }
+
+        lastError = const FormatException('Unexpected backend response');
+      } catch (error) {
+        lastError = error;
+      } finally {
+        client.close();
+      }
+    }
+
+    throw Exception(
+      'Attendance backend is not running at $defaultBaseUrl. Start it once using install_attendance_backend_startup.ps1. Last error: $lastError',
+    );
+  }
+
+  Future<Map<String, dynamic>> _get(String path) async {
+    Object? lastError;
+
+    for (final candidate in _candidateBaseUrls()) {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
+
+      try {
+        final response = await client
+            .getUrl(Uri.parse('$candidate$path'))
+            .timeout(const Duration(seconds: 3))
+            .then((request) => request.close())
+            .timeout(const Duration(seconds: 5));
+        final text = await response.transform(utf8.decoder).join();
+        final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+
+        if (response.statusCode >= 400) {
+          final detail = decoded is Map ? decoded['detail'] : text;
+          lastError = Exception(detail ?? 'HTTP ${response.statusCode}');
+          continue;
+        }
+
+        if (decoded is Map<String, dynamic>) {
+          return decoded;
+        }
+
+        lastError = const FormatException('Unexpected backend response');
+      } catch (error) {
+        lastError = error;
+      } finally {
+        client.close();
+      }
+    }
+
+    throw Exception(
+      'Attendance backend is not running at $defaultBaseUrl. Last error: $lastError',
+    );
+  }
+
+  Future<Map<String, dynamic>> _post(
+    String path,
+    Map<String, Object> body,
+  ) async {
+    Object? lastError;
+
+    for (final candidate in _candidateBaseUrls()) {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
+
+      try {
+        final request = await client
+            .postUrl(Uri.parse('$candidate$path'))
+            .timeout(const Duration(seconds: 3));
+        request.headers.contentType = ContentType.json;
+        request.write(jsonEncode(body));
+
+        final response = await request.close().timeout(
+          const Duration(seconds: 20),
+        );
+        final text = await response.transform(utf8.decoder).join();
+        final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+
+        if (response.statusCode >= 400) {
+          final detail = decoded is Map ? decoded['detail'] : text;
+          lastError = Exception(detail ?? 'HTTP ${response.statusCode}');
+          continue;
+        }
+
+        if (decoded is Map<String, dynamic>) {
+          return decoded;
+        }
+
+        lastError = const FormatException('Unexpected backend response');
+      } catch (error) {
+        lastError = error;
+      } finally {
+        client.close();
+      }
+    }
+
+    throw Exception(
+      'Attendance backend is not running at $defaultBaseUrl. Last error: $lastError',
+    );
+  }
+
+  List<String> _candidateBaseUrls() {
+    final typed = _usableBaseUrl(baseUrl);
+    final urls = <String>[
+      if (typed.isNotEmpty) typed,
+      defaultBaseUrl,
+    ];
+    final seen = <String>{};
+
+    return [
+      for (final url in urls)
+        if (seen.add(url.replaceAll(RegExp(r'/+$'), '')))
+          url.replaceAll(RegExp(r'/+$'), ''),
+    ];
+  }
+
+  String _usableBaseUrl(String value) {
+    final clean = value.trim().replaceAll(RegExp(r'/+$'), '');
+    if (clean.isEmpty) {
+      return '';
+    }
+
+    final uri = Uri.tryParse(clean);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      return '';
+    }
+
+    final isLocalHost =
+        uri.host == 'localhost' ||
+        uri.host == '127.0.0.1' ||
+        uri.host == '10.0.2.2';
+    if (isLocalHost) {
+      return '';
+    }
+
+    return clean;
+  }
 }
 
 class OfflineQwenService {
@@ -1715,14 +2524,6 @@ class OfflineQwenService {
     );
 
     return result ?? <String, dynamic>{};
-  }
-
-  double _asDouble(Object? value) {
-    if (value is num) {
-      return value.toDouble();
-    }
-
-    return 0;
   }
 
   int _asInt(Object? value) {

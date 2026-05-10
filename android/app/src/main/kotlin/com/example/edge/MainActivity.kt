@@ -83,7 +83,10 @@ class MainActivity : FlutterActivity() {
                     "text/csv",
                     "application/csv",
                     "text/comma-separated-values",
-                    "application/pdf"
+                    "application/pdf",
+                    "image/jpeg",
+                    "image/png",
+                    "image/webp"
                 )
             )
         }
