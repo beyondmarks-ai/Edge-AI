@@ -1,0 +1,61 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function isApprovedAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc(request.auth.uid).data.role == 'admin'
+        && userDoc(request.auth.uid).data.status == 'approved';
+    }
+
+    function isOwnUserDoc(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function validStudentCreate(userId) {
+      return isOwnUserDoc(userId)
+        && request.resource.data.uid == userId
+        && request.resource.data.role == 'student'
+        && request.resource.data.status == 'pending'
+        && request.resource.data.email is string
+        && request.resource.data.displayName is string
+        && request.resource.data.studentId is string;
+    }
+
+    function validAdminCreate(userId) {
+      return isOwnUserDoc(userId)
+        && request.resource.data.uid == userId
+        && request.resource.data.role == 'admin'
+        && request.resource.data.status == 'approved'
+        && request.resource.data.email is string
+        && request.resource.data.displayName is string;
+    }
+
+    match /users/{userId} {
+      allow create: if validStudentCreate(userId) || validAdminCreate(userId);
+      allow read: if isOwnUserDoc(userId) || isApprovedAdmin();
+      allow list: if isApprovedAdmin();
+      allow update: if isApprovedAdmin();
+      allow delete: if false;
+    }
+
+    match /attendance_students/{studentId} {
+      allow read, list: if isApprovedAdmin();
+      allow write: if false;
+    }
+
+    match /attendance_records/{recordId} {
+      allow read, list: if isApprovedAdmin();
+      allow write: if false;
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "673967167055",
+    "project_id": "edge-ai-280ac",
+    "storage_bucket": "edge-ai-280ac.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:673967167055:android:0465f9dfdd997085d17c3a",
+        "android_client_info": {
+          "package_name": "com.example.edge"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCMOhTZQB5wn8pv_ELtbQliqdP2qgPfd4o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -46,9 +46,15 @@ app.*.map.json
 
 # Local backend/runtime files
 /backend/.venv/
+/backend/.env.local
+/backend/firebase-service-account.json
 /backend/data/
 /backend/__pycache__/
 **/__pycache__/
+
+# Local diagnostics/screenshots
+/analyze error.txt
+/ss/
 
 # Local reference checkouts and downloaded model data
 /private-gpt/
@@ -56,3 +62,7 @@ app.*.map.json
 
 # Student image datasets should stay local
 /Img/
+
+# Keep generated release APKs in repo releases only when intentionally copied.
+/release-apks/*
+!/release-apks/*.apk

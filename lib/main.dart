@@ -2,16 +2,43 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_vlc_player/flutter_vlc_player.dart';
 import 'package:llama_flutter_android/llama_flutter_android.dart';
 
-void main() {
-  runApp(const EdgeApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  var firebaseReady = false;
+  String? firebaseError;
+  try {
+    await Firebase.initializeApp();
+    firebaseReady = true;
+  } catch (error) {
+    firebaseError = error.toString();
+  }
+
+  runApp(
+    SessionScope(
+      notifier: AppSession(),
+      child: EdgeApp(
+        firebaseReady: firebaseReady,
+        firebaseError: firebaseError,
+      ),
+    ),
+  );
 }
 
 class EdgeApp extends StatelessWidget {
-  const EdgeApp({super.key});
+  const EdgeApp({super.key, required this.firebaseReady, this.firebaseError});
+
+  final bool firebaseReady;
+  final String? firebaseError;
 
   @override
   Widget build(BuildContext context) {
@@ -59,16 +86,342 @@ class EdgeApp extends StatelessWidget {
           ),
         ),
       ),
-      initialRoute: SignInScreen.routeName,
+      home: firebaseReady
+          ? const AuthGate()
+          : FirebaseSetupScreen(error: firebaseError),
       routes: {
         AiPreparationScreen.routeName: (_) => const AiPreparationScreen(),
         SignInScreen.routeName: (_) => const SignInScreen(),
         SignUpScreen.routeName: (_) => const SignUpScreen(),
         DashboardScreen.routeName: (_) => const DashboardScreen(),
         AttendenceScreen.routeName: (_) => const AttendenceScreen(),
+        NewStudentScreen.routeName: (_) => const NewStudentScreen(),
+        AdvanceSysScreen.routeName: (_) => const AdvanceSysScreen(),
+        StudentApprovalsScreen.routeName: (_) => const StudentApprovalsScreen(),
         RagScreen.routeName: (_) => const RagScreen(),
         SettingScreen.routeName: (_) => const SettingScreen(),
       },
+    );
+  }
+}
+
+class AppSession extends ChangeNotifier {
+  AppUserProfile? profile;
+
+  bool get isAdmin => profile?.isAdmin == true;
+  bool get isApproved => profile?.isApproved == true;
+  bool get isStudent => profile?.role == UserRole.student;
+
+  bool hasProfile(AppUserProfile? value) {
+    final current = profile;
+    return current?.uid == value?.uid &&
+        current?.email == value?.email &&
+        current?.displayName == value?.displayName &&
+        current?.role == value?.role &&
+        current?.status == value?.status &&
+        current?.studentId == value?.studentId;
+  }
+
+  void setProfile(AppUserProfile? value) {
+    if (hasProfile(value)) {
+      return;
+    }
+    profile = value;
+    notifyListeners();
+  }
+}
+
+class SessionScope extends InheritedNotifier<AppSession> {
+  const SessionScope({
+    super.key,
+    required AppSession notifier,
+    required super.child,
+  }) : super(notifier: notifier);
+
+  static AppSession of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<SessionScope>();
+    assert(scope != null, 'SessionScope not found.');
+    return scope!.notifier!;
+  }
+
+  static AppSession read(BuildContext context) {
+    final widget = context
+        .getElementForInheritedWidgetOfExactType<SessionScope>()
+        ?.widget;
+    assert(widget is SessionScope, 'SessionScope not found.');
+    return (widget as SessionScope).notifier!;
+  }
+}
+
+void _queueSessionProfile(BuildContext context, AppUserProfile? profile) {
+  final session = SessionScope.read(context);
+  if (session.hasProfile(profile)) {
+    return;
+  }
+
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    session.setProfile(profile);
+  });
+}
+
+enum UserRole { student, admin }
+
+enum UserStatus { pending, approved, rejected }
+
+class AppUserProfile {
+  const AppUserProfile({
+    required this.uid,
+    required this.email,
+    required this.displayName,
+    required this.role,
+    required this.status,
+    required this.studentId,
+    this.verificationDocUrl,
+    this.rejectionReason,
+  });
+
+  final String uid;
+  final String email;
+  final String displayName;
+  final UserRole role;
+  final UserStatus status;
+  final String studentId;
+  final String? verificationDocUrl;
+  final String? rejectionReason;
+
+  bool get isAdmin => role == UserRole.admin;
+  bool get isApproved => status == UserStatus.approved;
+
+  factory AppUserProfile.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data() ?? <String, dynamic>{};
+    final role = data['role']?.toString() == 'admin'
+        ? UserRole.admin
+        : UserRole.student;
+    final statusText = data['status']?.toString() ?? 'pending';
+    final status = statusText == 'approved'
+        ? UserStatus.approved
+        : statusText == 'rejected'
+        ? UserStatus.rejected
+        : UserStatus.pending;
+
+    return AppUserProfile(
+      uid: doc.id,
+      email: data['email']?.toString() ?? '',
+      displayName: data['displayName']?.toString() ?? 'User',
+      role: role,
+      status: status,
+      studentId: data['studentId']?.toString() ?? doc.id,
+      verificationDocUrl: data['verificationDocUrl']?.toString(),
+      rejectionReason: data['rejectionReason']?.toString(),
+    );
+  }
+}
+
+class FirebaseSetupScreen extends StatelessWidget {
+  const FirebaseSetupScreen({super.key, this.error});
+
+  final String? error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Icon(
+                Icons.cloud_off_outlined,
+                size: 58,
+                color: Color(0xFFB3261E),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'Firebase setup required',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Color(0xFF123D22),
+                  fontSize: 26,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Add your Firebase Android config before using authentication.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Color(0xFF5D7465), height: 1.4),
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 16),
+                Text(
+                  error!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Color(0xFFB3261E)),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, authSnapshot) {
+        if (authSnapshot.connectionState == ConnectionState.waiting) {
+          return const _SessionLoadingScreen();
+        }
+
+        final user = authSnapshot.data;
+        if (user == null) {
+          _queueSessionProfile(context, null);
+          return const SignInScreen();
+        }
+
+        return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .snapshots(),
+          builder: (context, profileSnapshot) {
+            if (profileSnapshot.connectionState == ConnectionState.waiting) {
+              return const _SessionLoadingScreen();
+            }
+
+            final doc = profileSnapshot.data;
+            if (doc == null || !doc.exists) {
+              _queueSessionProfile(context, null);
+              return const MissingProfileScreen();
+            }
+
+            final profile = AppUserProfile.fromDoc(doc);
+            _queueSessionProfile(context, profile);
+
+            if (!profile.isApproved) {
+              return StudentApprovalStatusScreen(profile: profile);
+            }
+
+            if (profile.isAdmin) {
+              return const DashboardScreen();
+            }
+
+            return const RagScreen();
+          },
+        );
+      },
+    );
+  }
+}
+
+class _SessionLoadingScreen extends StatelessWidget {
+  const _SessionLoadingScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(body: Center(child: CircularProgressIndicator()));
+  }
+}
+
+class MissingProfileScreen extends StatelessWidget {
+  const MissingProfileScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return _AccountStateScreen(
+      icon: Icons.manage_accounts_outlined,
+      title: 'Profile setup pending',
+      message:
+          'Your Firebase account exists, but the app profile was not created. Sign out and sign up again.',
+      actionText: 'Sign out',
+      onAction: () => FirebaseAuth.instance.signOut(),
+    );
+  }
+}
+
+class StudentApprovalStatusScreen extends StatelessWidget {
+  const StudentApprovalStatusScreen({super.key, required this.profile});
+
+  final AppUserProfile profile;
+
+  @override
+  Widget build(BuildContext context) {
+    final rejected = profile.status == UserStatus.rejected;
+    return _AccountStateScreen(
+      icon: rejected ? Icons.cancel_outlined : Icons.hourglass_top_rounded,
+      title: rejected ? 'Verification rejected' : 'Waiting for admin approval',
+      message: rejected
+          ? (profile.rejectionReason?.isNotEmpty == true
+                ? profile.rejectionReason!
+                : 'An admin rejected this verification request.')
+          : 'Your verification document is submitted. An admin must approve your student account before you can use Rag and attendance.',
+      actionText: 'Sign out',
+      onAction: () => FirebaseAuth.instance.signOut(),
+    );
+  }
+}
+
+class _AccountStateScreen extends StatelessWidget {
+  const _AccountStateScreen({
+    required this.icon,
+    required this.title,
+    required this.message,
+    required this.actionText,
+    required this.onAction,
+  });
+
+  final IconData icon;
+  final String title;
+  final String message;
+  final String actionText;
+  final VoidCallback onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Icon(icon, color: primary, size: 58),
+              const SizedBox(height: 18),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Color(0xFF123D22),
+                  fontSize: 26,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Color(0xFF5D7465), height: 1.4),
+              ),
+              const SizedBox(height: 22),
+              OutlinedButton.icon(
+                onPressed: onAction,
+                icon: const Icon(Icons.logout_rounded),
+                label: Text(actionText),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -500,10 +853,49 @@ class _AiPreparationScreenState extends State<AiPreparationScreen>
   }
 }
 
-class SignInScreen extends StatelessWidget {
+class SignInScreen extends StatefulWidget {
   const SignInScreen({super.key});
 
-  static const routeName = '/';
+  static const routeName = '/sign-in';
+
+  @override
+  State<SignInScreen> createState() => _SignInScreenState();
+}
+
+class _SignInScreenState extends State<SignInScreen> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  String? _message;
+  bool _isBusy = false;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _signIn() async {
+    setState(() {
+      _isBusy = true;
+      _message = null;
+    });
+
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
+    } on FirebaseAuthException catch (error) {
+      setState(() => _message = error.message ?? error.code);
+    } catch (error) {
+      setState(() => _message = error.toString());
+    } finally {
+      if (mounted) {
+        setState(() => _isBusy = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -513,29 +905,175 @@ class SignInScreen extends StatelessWidget {
       actionText: 'Sign In',
       footerText: 'Do not have an account?',
       footerActionText: 'Sign Up',
-      fields: const [
+      isBusy: _isBusy,
+      message: _message,
+      fields: [
         AuthTextField(
+          controller: _emailController,
           label: 'Email',
           icon: Icons.email_outlined,
           keyboardType: TextInputType.emailAddress,
         ),
         AuthTextField(
+          controller: _passwordController,
           label: 'Password',
           icon: Icons.lock_outline,
           obscureText: true,
         ),
       ],
-      onAction: () => _goToDashboard(context),
+      onAction: _signIn,
       onFooterAction: () =>
           Navigator.pushNamed(context, SignUpScreen.routeName),
     );
   }
 }
 
-class SignUpScreen extends StatelessWidget {
+class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
 
   static const routeName = '/sign-up';
+
+  @override
+  State<SignUpScreen> createState() => _SignUpScreenState();
+}
+
+class _SignUpScreenState extends State<SignUpScreen> {
+  static const _filePickerChannel = MethodChannel('edge/file_picker');
+  static const _adminSignupCode = '0209';
+
+  final _nameController = TextEditingController();
+  final _studentIdController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _adminCodeController = TextEditingController();
+  final List<PickedRagFile> _attendanceImages = [];
+  bool _isAdminSignup = false;
+  bool _isBusy = false;
+  String? _message;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _studentIdController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _adminCodeController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickAttendanceImage() async {
+    final result = await _filePickerChannel.invokeMapMethod<String, dynamic>(
+      'pickFile',
+    );
+    if (result == null) {
+      return;
+    }
+
+    final bytes = result['bytes'];
+    final name = result['name'];
+    if (bytes is Uint8List && name is String) {
+      setState(() {
+        _attendanceImages.add(PickedRagFile(name: name, bytes: bytes));
+      });
+    }
+  }
+
+  Future<void> _signUp() async {
+    final name = _nameController.text.trim();
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    final studentId = _studentIdController.text.trim();
+
+    if (name.isEmpty || email.isEmpty || password.isEmpty) {
+      setState(() => _message = 'Name, email, and password are required.');
+      return;
+    }
+
+    if (!_isAdminSignup &&
+        (studentId.isEmpty || _attendanceImages.length < 4)) {
+      setState(
+        () => _message =
+            'Student ID and at least 4 attendance photos are required.',
+      );
+      return;
+    }
+
+    if (_isAdminSignup && _adminCodeController.text.trim().isEmpty) {
+      setState(() => _message = 'Admin signup code is required.');
+      return;
+    }
+
+    setState(() {
+      _isBusy = true;
+      _message = null;
+    });
+
+    try {
+      final credential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(email: email, password: password);
+      final user = credential.user;
+      if (user == null) {
+        throw StateError('Firebase did not return a user.');
+      }
+
+      await user.updateDisplayName(name);
+
+      if (_isAdminSignup) {
+        if (_adminCodeController.text.trim() != _adminSignupCode) {
+          await user.delete();
+          throw Exception('Invalid admin signup code.');
+        }
+
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'uid': user.uid,
+          'email': email,
+          'displayName': name,
+          'role': 'admin',
+          'status': 'approved',
+          'studentId': user.uid,
+          'createdAt': FieldValue.serverTimestamp(),
+          'reviewedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      } else {
+        final imageUrls = <String>[];
+        final imageNames = <String>[];
+        for (var index = 0; index < _attendanceImages.length; index++) {
+          final image = _attendanceImages[index];
+          final safeName = _safeStorageName(image.name);
+          final path =
+              'student_attendance_images/${user.uid}/${index + 1}_$safeName';
+          final metadata = SettableMetadata(
+            contentType: _verificationContentType(image.name),
+          );
+          final ref = FirebaseStorage.instance.ref(path);
+          await ref.putData(image.bytes, metadata);
+          imageUrls.add(await ref.getDownloadURL());
+          imageNames.add(image.name);
+        }
+
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'uid': user.uid,
+          'email': email,
+          'displayName': name,
+          'role': 'student',
+          'status': 'pending',
+          'studentId': studentId,
+          'attendanceImageUrls': imageUrls,
+          'attendanceImageNames': imageNames,
+          'attendanceImageCount': imageUrls.length,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    } on FirebaseAuthException catch (error) {
+      setState(() => _message = error.message ?? error.code);
+    } catch (error) {
+      setState(() => _message = error.toString());
+    } finally {
+      if (mounted) {
+        setState(() => _isBusy = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -545,28 +1083,108 @@ class SignUpScreen extends StatelessWidget {
       actionText: 'Sign Up',
       footerText: 'Already have an account?',
       footerActionText: 'Sign In',
-      fields: const [
+      isBusy: _isBusy,
+      message: _message,
+      fields: [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: _isAdminSignup,
+          onChanged: _isBusy
+              ? null
+              : (value) => setState(() => _isAdminSignup = value),
+          title: const Text('Create admin account'),
+          subtitle: const Text('Admins need the prototype signup code.'),
+        ),
         AuthTextField(
+          controller: _nameController,
           label: 'Full name',
           icon: Icons.person_outline,
           textInputAction: TextInputAction.next,
         ),
+        if (!_isAdminSignup)
+          AuthTextField(
+            controller: _studentIdController,
+            label: 'Student ID',
+            icon: Icons.badge_outlined,
+            textInputAction: TextInputAction.next,
+          ),
         AuthTextField(
+          controller: _emailController,
           label: 'Email',
           icon: Icons.email_outlined,
           keyboardType: TextInputType.emailAddress,
           textInputAction: TextInputAction.next,
         ),
         AuthTextField(
+          controller: _passwordController,
           label: 'Password',
           icon: Icons.lock_outline,
           obscureText: true,
         ),
+        if (_isAdminSignup)
+          AuthTextField(
+            controller: _adminCodeController,
+            label: 'Admin signup code',
+            icon: Icons.admin_panel_settings_outlined,
+            obscureText: true,
+          )
+        else
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _isBusy ? null : _pickAttendanceImage,
+                icon: const Icon(Icons.add_photo_alternate_outlined),
+                label: Text(
+                  'Add attendance photo (${_attendanceImages.length}/4)',
+                ),
+              ),
+              if (_attendanceImages.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (
+                      var index = 0;
+                      index < _attendanceImages.length;
+                      index++
+                    )
+                      InputChip(
+                        label: Text(
+                          _attendanceImages[index].name,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onDeleted: _isBusy
+                            ? null
+                            : () => setState(
+                                () => _attendanceImages.removeAt(index),
+                              ),
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          ),
       ],
-      onAction: () => _goToDashboard(context),
+      onAction: _signUp,
       onFooterAction: () => Navigator.pop(context),
     );
   }
+}
+
+String _verificationContentType(String name) {
+  final lower = name.toLowerCase();
+  if (lower.endsWith('.pdf')) {
+    return 'application/pdf';
+  }
+  if (lower.endsWith('.png')) {
+    return 'image/png';
+  }
+  if (lower.endsWith('.webp')) {
+    return 'image/webp';
+  }
+  return 'image/jpeg';
 }
 
 class AuthFrame extends StatelessWidget {
@@ -580,6 +1198,8 @@ class AuthFrame extends StatelessWidget {
     required this.fields,
     required this.onAction,
     required this.onFooterAction,
+    this.isBusy = false,
+    this.message,
   });
 
   final String title;
@@ -588,8 +1208,10 @@ class AuthFrame extends StatelessWidget {
   final String footerText;
   final String footerActionText;
   final List<Widget> fields;
-  final VoidCallback onAction;
+  final FutureOr<void> Function()? onAction;
   final VoidCallback onFooterAction;
+  final bool isBusy;
+  final String? message;
 
   @override
   Widget build(BuildContext context) {
@@ -608,14 +1230,6 @@ class AuthFrame extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        onPressed: () => _goToDashboard(context),
-                        child: const Text('Skip'),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
                     _BrandHeader(primary: primary),
                     const SizedBox(height: 38),
                     Text(
@@ -638,9 +1252,26 @@ class AuthFrame extends StatelessWidget {
                       (field) => [field, const SizedBox(height: 16)],
                     ),
                     const SizedBox(height: 8),
-                    ElevatedButton(
-                      onPressed: onAction,
-                      child: Text(actionText),
+                    if (message != null) ...[
+                      Text(
+                        message!,
+                        style: const TextStyle(color: Color(0xFFB3261E)),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    ElevatedButton.icon(
+                      onPressed: isBusy || onAction == null ? null : onAction,
+                      icon: isBusy
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.arrow_forward_rounded),
+                      label: Text(isBusy ? 'Please wait...' : actionText),
                     ),
                     const SizedBox(height: 18),
                     Row(
@@ -672,6 +1303,7 @@ class AuthFrame extends StatelessWidget {
 class AuthTextField extends StatelessWidget {
   const AuthTextField({
     super.key,
+    required this.controller,
     required this.label,
     required this.icon,
     this.obscureText = false,
@@ -679,6 +1311,7 @@ class AuthTextField extends StatelessWidget {
     this.textInputAction = TextInputAction.done,
   });
 
+  final TextEditingController controller;
   final String label;
   final IconData icon;
   final bool obscureText;
@@ -688,6 +1321,7 @@ class AuthTextField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return TextField(
+      controller: controller,
       obscureText: obscureText,
       keyboardType: keyboardType,
       textInputAction: textInputAction,
@@ -761,12 +1395,12 @@ class _DashboardScreenState extends State<DashboardScreen>
     text: AttendanceApiClient.defaultBaseUrl,
   );
   final _rtspController = TextEditingController(
-    text: 'rtsp://admin:admin@192.168.1.9:1935',
+    text:
+        'rtsp://username:password@192.168.1.250:554/cam/realmonitor?channel=1&subtype=1',
   );
-  Timer? _feedTimer;
-  int _feedTick = 0;
   String? _streamMessage;
   bool _isSavingStream = false;
+  bool _showLiveFeed = false;
 
   AttendanceApiClient get _attendanceClient =>
       AttendanceApiClient(_attendanceBackendController.text.trim());
@@ -788,16 +1422,10 @@ class _DashboardScreenState extends State<DashboardScreen>
       },
     );
     unawaited(_modelCoordinator.refresh());
-    _feedTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (mounted) {
-        setState(() => _feedTick++);
-      }
-    });
   }
 
   @override
   void dispose() {
-    _feedTimer?.cancel();
     _attendanceBackendController.dispose();
     _rtspController.dispose();
     _modelCoordinator.dispose();
@@ -816,7 +1444,6 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (mounted) {
         setState(() {
           _streamMessage = 'RTSP stream connected.';
-          _feedTick++;
         });
       }
     } catch (error) {
@@ -842,8 +1469,11 @@ class _DashboardScreenState extends State<DashboardScreen>
         rtspController: _rtspController,
         streamMessage: _streamMessage,
         isSavingStream: _isSavingStream,
-        feedUrl: _attendanceClient.streamFrameUrl(_feedTick),
+        showLiveFeed: _showLiveFeed,
         onSaveStream: _saveStreamConfig,
+        onToggleLiveFeed: () {
+          setState(() => _showLiveFeed = !_showLiveFeed);
+        },
       ),
     );
   }
@@ -858,8 +1488,9 @@ class DashboardSetupPanel extends StatelessWidget {
     required this.rtspController,
     required this.streamMessage,
     required this.isSavingStream,
-    required this.feedUrl,
+    required this.showLiveFeed,
     required this.onSaveStream,
+    required this.onToggleLiveFeed,
   });
 
   final Animation<double> animation;
@@ -868,8 +1499,9 @@ class DashboardSetupPanel extends StatelessWidget {
   final TextEditingController rtspController;
   final String? streamMessage;
   final bool isSavingStream;
-  final String feedUrl;
+  final bool showLiveFeed;
   final VoidCallback onSaveStream;
+  final VoidCallback onToggleLiveFeed;
 
   @override
   Widget build(BuildContext context) {
@@ -1028,8 +1660,9 @@ class DashboardSetupPanel extends StatelessWidget {
             rtspController: rtspController,
             streamMessage: streamMessage,
             isSavingStream: isSavingStream,
-            feedUrl: feedUrl,
+            showLiveFeed: showLiveFeed,
             onSaveStream: onSaveStream,
+            onToggleLiveFeed: onToggleLiveFeed,
           ),
         ],
       ),
@@ -1043,16 +1676,18 @@ class _RtspDashboardPanel extends StatelessWidget {
     required this.rtspController,
     required this.streamMessage,
     required this.isSavingStream,
-    required this.feedUrl,
+    required this.showLiveFeed,
     required this.onSaveStream,
+    required this.onToggleLiveFeed,
   });
 
   final TextEditingController backendController;
   final TextEditingController rtspController;
   final String? streamMessage;
   final bool isSavingStream;
-  final String feedUrl;
+  final bool showLiveFeed;
   final VoidCallback onSaveStream;
+  final VoidCallback onToggleLiveFeed;
 
   @override
   Widget build(BuildContext context) {
@@ -1083,27 +1718,27 @@ class _RtspDashboardPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          AspectRatio(
-            aspectRatio: 16 / 9,
-            child: ClipRRect(
+          if (showLiveFeed) ...[
+            ClipRRect(
               borderRadius: BorderRadius.circular(14),
-              child: Container(
-                color: Colors.black,
-                child: Image.network(
-                  feedUrl,
-                  fit: BoxFit.cover,
-                  gaplessPlayback: true,
-                  errorBuilder: (context, error, stackTrace) {
-                    return const Center(
-                      child: Text(
-                        'Live feed unavailable',
-                        style: TextStyle(color: Colors.white70),
-                      ),
-                    );
-                  },
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: _BackendLiveFrameViewer(
+                  key: ValueKey(backendController.text.trim()),
+                  client: AttendanceApiClient(backendController.text.trim()),
                 ),
               ),
             ),
+            const SizedBox(height: 12),
+          ],
+          OutlinedButton.icon(
+            onPressed: onToggleLiveFeed,
+            icon: Icon(
+              showLiveFeed
+                  ? Icons.visibility_off_rounded
+                  : Icons.visibility_rounded,
+            ),
+            label: Text(showLiveFeed ? 'Hide live camera' : 'View live camera'),
           ),
           const SizedBox(height: 12),
           TextField(
@@ -1149,6 +1784,538 @@ class _RtspDashboardPanel extends StatelessWidget {
   }
 }
 
+class _BackendLiveFrameViewer extends StatefulWidget {
+  const _BackendLiveFrameViewer({super.key, required this.client});
+
+  final AttendanceApiClient client;
+
+  @override
+  State<_BackendLiveFrameViewer> createState() =>
+      _BackendLiveFrameViewerState();
+}
+
+class _BackendLiveFrameViewerState extends State<_BackendLiveFrameViewer> {
+  final HttpClient _httpClient = HttpClient();
+  Timer? _timer;
+  int _tick = 0;
+  Map<String, String> _headers = const {};
+  Uint8List? _frameBytes;
+  String? _statusText;
+  bool _isLoading = true;
+  bool _fetchInFlight = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadHeaders());
+    _timer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
+      unawaited(_refreshFrame());
+    });
+    unawaited(_refreshFrame());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _httpClient.close(force: true);
+    super.dispose();
+  }
+
+  Future<void> _loadHeaders() async {
+    final headers = await _firebaseAuthHeaderMap();
+    if (mounted) {
+      setState(() => _headers = headers);
+    }
+  }
+
+  Future<void> _refreshFrame() async {
+    if (_fetchInFlight) {
+      return;
+    }
+    _fetchInFlight = true;
+
+    final uri = Uri.parse(widget.client.streamFrameUrl(_tick++));
+    try {
+      final request = await _httpClient.getUrl(uri);
+      request.headers.set(HttpHeaders.cacheControlHeader, 'no-cache');
+      request.headers.set(HttpHeaders.acceptHeader, 'image/jpeg');
+      for (final entry in _headers.entries) {
+        request.headers.set(entry.key, entry.value);
+      }
+
+      final response = await request.close().timeout(
+        const Duration(seconds: 12),
+      );
+      final bytes = await response.fold<List<int>>(<int>[], (buffer, chunk) {
+        buffer.addAll(chunk);
+        return buffer;
+      });
+
+      if (!mounted) {
+        return;
+      }
+
+      if (response.statusCode != HttpStatus.ok) {
+        final text = utf8.decode(bytes, allowMalformed: true).trim();
+        setState(() {
+          _frameBytes = null;
+          _isLoading = false;
+          _statusText = text.isNotEmpty
+              ? text
+              : 'Frame request failed with HTTP ${response.statusCode}.';
+        });
+        return;
+      }
+
+      setState(() {
+        _frameBytes = Uint8List.fromList(bytes);
+        _isLoading = false;
+        _statusText = null;
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _statusText = 'Live frame error: $error';
+        });
+      }
+    } finally {
+      _fetchInFlight = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.black,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (_frameBytes != null)
+            Image.memory(_frameBytes!, fit: BoxFit.cover, gaplessPlayback: true)
+          else
+            const SizedBox.expand(),
+          if (_isLoading && _frameBytes == null)
+            const Center(child: CircularProgressIndicator(color: Colors.white)),
+          if (_statusText != null)
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 12,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.72),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Text(
+                    _statusText!,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      height: 1.3,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RtspLivePlayer extends StatefulWidget {
+  const _RtspLivePlayer({required this.rtspUrl});
+
+  final String rtspUrl;
+
+  @override
+  State<_RtspLivePlayer> createState() => _RtspLivePlayerState();
+}
+
+class _RtspLivePlayerState extends State<_RtspLivePlayer> {
+  VlcPlayerController? _controller;
+  Timer? _loadTimer;
+  bool _loadingTimedOut = false;
+  bool? _rtspPortReachable;
+  String? _rtspNetworkMessage;
+  int _playAttempt = 0;
+
+  List<_RtspPlaybackProfile> get _playbackProfiles =>
+      _rtspPlaybackProfiles(widget.rtspUrl);
+
+  _RtspPlaybackProfile get _activeProfile {
+    final profiles = _playbackProfiles;
+    final index = _playAttempt < profiles.length
+        ? _playAttempt
+        : profiles.length - 1;
+    return profiles[index];
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _checkRtspReachability();
+    _createController();
+  }
+
+  @override
+  void dispose() {
+    _loadTimer?.cancel();
+    final controller = _controller;
+    if (controller != null) {
+      controller.removeListener(_handlePlayerChanged);
+      unawaited(controller.stop());
+      unawaited(controller.dispose());
+    }
+    super.dispose();
+  }
+
+  void _createController() {
+    _loadTimer?.cancel();
+    final oldController = _controller;
+    if (oldController != null) {
+      oldController.removeListener(_handlePlayerChanged);
+      unawaited(oldController.stop());
+      unawaited(oldController.dispose());
+    }
+
+    final profile = _activeProfile;
+    final controller = VlcPlayerController.network(
+      profile.url,
+      hwAcc: profile.hwAcc,
+      autoPlay: true,
+      options: _vlcOptions(),
+    );
+    controller.addListener(_handlePlayerChanged);
+    _controller = controller;
+    _startLoadTimer();
+  }
+
+  VlcPlayerOptions _vlcOptions() {
+    return VlcPlayerOptions(
+      advanced: VlcAdvancedOptions([
+        VlcAdvancedOptions.networkCaching(1200),
+        VlcAdvancedOptions.liveCaching(700),
+        VlcAdvancedOptions.clockSynchronization(0),
+        VlcAdvancedOptions.clockJitter(0),
+      ]),
+      rtp: VlcRtpOptions([VlcRtpOptions.rtpOverRtsp(true)]),
+      extras: const ['--no-audio', '--drop-late-frames', '--skip-frames'],
+    );
+  }
+
+  Future<void> _checkRtspReachability() async {
+    final uri = Uri.tryParse(widget.rtspUrl);
+    final host = uri?.host ?? '';
+    final port = uri == null || uri.port == 0 ? 554 : uri.port;
+
+    if (uri == null || uri.scheme != 'rtsp' || host.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _rtspPortReachable = false;
+          _rtspNetworkMessage = 'Invalid RTSP URL.';
+        });
+      }
+      return;
+    }
+
+    try {
+      final socket = await Socket.connect(
+        host,
+        port,
+        timeout: const Duration(seconds: 4),
+      );
+      socket.destroy();
+
+      if (mounted) {
+        setState(() {
+          _rtspPortReachable = true;
+          _rtspNetworkMessage = 'RTSP port reachable at $host:$port.';
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _rtspPortReachable = false;
+          _rtspNetworkMessage =
+              'Phone cannot reach RTSP camera at $host:$port. Check same Wi-Fi, camera app, and IP address.';
+        });
+      }
+    }
+  }
+
+  void _handlePlayerChanged() {
+    final value = _controller?.value;
+    if (value == null) {
+      return;
+    }
+
+    if (value.isPlaying) {
+      _loadTimer?.cancel();
+    }
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _startLoadTimer() {
+    _loadTimer?.cancel();
+    _loadingTimedOut = false;
+    _loadTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted || _controller?.value.isPlaying == true) {
+        return;
+      }
+
+      final profiles = _playbackProfiles;
+      if (_rtspPortReachable != false && _playAttempt < profiles.length - 1) {
+        setState(() {
+          _playAttempt++;
+          _loadingTimedOut = false;
+        });
+        _createController();
+      } else {
+        setState(() => _loadingTimedOut = true);
+      }
+    });
+  }
+
+  void _retry() {
+    final profiles = _playbackProfiles;
+    setState(() {
+      _playAttempt = (_playAttempt + 1) % profiles.length;
+      _loadingTimedOut = false;
+      _rtspPortReachable = null;
+      _rtspNetworkMessage = null;
+    });
+    _checkRtspReachability();
+    _createController();
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final profiles = _playbackProfiles;
+    final profile = _activeProfile;
+    final controller = _controller;
+    final value = controller?.value;
+    final showStatus =
+        controller == null ||
+        _rtspPortReachable == false ||
+        value == null ||
+        value.hasError ||
+        _loadingTimedOut ||
+        value.isBuffering ||
+        value.playingState == PlayingState.initializing ||
+        value.playingState == PlayingState.initialized;
+    final statusText = _rtspPortReachable == false
+        ? _rtspNetworkMessage ?? 'Phone cannot reach the RTSP camera.'
+        : value?.hasError == true
+        ? 'Camera player error: ${value?.errorDescription ?? 'unknown error'}'
+        : _loadingTimedOut
+        ? _rtspPortReachable == true
+              ? 'RTSP is reachable, but Android VLC did not render video. Use the camera sub-stream or lower H.264 settings.'
+              : 'Camera is still not loading. Check the RTSP app is running and the phone is on the same Wi-Fi.'
+        : 'Connecting to live camera...';
+    final modeText =
+        'Trying ${profile.label} (${_playAttempt + 1}/${profiles.length})';
+
+    return Container(
+      color: Colors.black,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          if (controller != null)
+            VlcPlayer(
+              key: ValueKey('vlc-${profile.url}-$_playAttempt'),
+              controller: controller,
+              aspectRatio: 16 / 9,
+              virtualDisplay: profile.virtualDisplay,
+              placeholder: const Center(
+                child: SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          if (showStatus)
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.62),
+                ),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final compact = constraints.maxHeight < 220;
+                    final padding = EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: compact ? 8 : 14,
+                    );
+                    final minHeight = constraints.maxHeight > padding.vertical
+                        ? constraints.maxHeight - padding.vertical
+                        : 0.0;
+                    final indicatorSize = compact ? 22.0 : 28.0;
+
+                    return SingleChildScrollView(
+                      padding: padding,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(minHeight: minHeight),
+                        child: Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (value?.hasError != true &&
+                                  !_loadingTimedOut &&
+                                  _rtspPortReachable != false)
+                                SizedBox(
+                                  width: indicatorSize,
+                                  height: indicatorSize,
+                                  child: const CircularProgressIndicator(
+                                    strokeWidth: 2.5,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              else
+                                Icon(
+                                  Icons.videocam_off_outlined,
+                                  color: Colors.white,
+                                  size: compact ? 26 : 34,
+                                ),
+                              SizedBox(height: compact ? 8 : 12),
+                              Text(
+                                _rtspNetworkMessage ?? modeText,
+                                textAlign: TextAlign.center,
+                                maxLines: compact ? 2 : 3,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              SizedBox(height: compact ? 6 : 8),
+                              Text(
+                                statusText,
+                                textAlign: TextAlign.center,
+                                maxLines: compact ? 3 : 4,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: compact ? 13 : 14,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              SizedBox(height: compact ? 8 : 12),
+                              OutlinedButton.icon(
+                                onPressed: _retry,
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  side: const BorderSide(color: Colors.white70),
+                                  minimumSize: Size(0, compact ? 34 : 40),
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: compact ? 12 : 16,
+                                    vertical: 0,
+                                  ),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                                icon: const Icon(Icons.refresh_rounded),
+                                label: const Text('Retry camera'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RtspPlaybackProfile {
+  const _RtspPlaybackProfile({
+    required this.url,
+    required this.label,
+    required this.virtualDisplay,
+    required this.hwAcc,
+  });
+
+  final String url;
+  final String label;
+  final bool virtualDisplay;
+  final HwAcc hwAcc;
+}
+
+List<_RtspPlaybackProfile> _rtspPlaybackProfiles(String rtspUrl) {
+  final trimmedUrl = rtspUrl.trim();
+  final subStreamUrl = _dahuaSubStreamUrl(trimmedUrl);
+  final profiles = <_RtspPlaybackProfile>[];
+
+  if (subStreamUrl != null && subStreamUrl != trimmedUrl) {
+    profiles.add(
+      _RtspPlaybackProfile(
+        url: subStreamUrl,
+        label: 'camera sub-stream, VLC virtual display',
+        virtualDisplay: true,
+        hwAcc: HwAcc.auto,
+      ),
+    );
+  }
+
+  profiles.addAll([
+    _RtspPlaybackProfile(
+      url: trimmedUrl,
+      label: 'configured stream, VLC virtual display',
+      virtualDisplay: true,
+      hwAcc: HwAcc.auto,
+    ),
+    _RtspPlaybackProfile(
+      url: trimmedUrl,
+      label: 'configured stream, hardware decoder',
+      virtualDisplay: true,
+      hwAcc: HwAcc.full,
+    ),
+    _RtspPlaybackProfile(
+      url: trimmedUrl,
+      label: 'configured stream, software decoder',
+      virtualDisplay: true,
+      hwAcc: HwAcc.disabled,
+    ),
+    _RtspPlaybackProfile(
+      url: trimmedUrl,
+      label: 'configured stream, hybrid view',
+      virtualDisplay: false,
+      hwAcc: HwAcc.disabled,
+    ),
+  ]);
+
+  return profiles;
+}
+
+String? _dahuaSubStreamUrl(String rtspUrl) {
+  if (!RegExp(r'([?&]subtype=)0\b').hasMatch(rtspUrl)) {
+    return null;
+  }
+
+  return rtspUrl.replaceFirstMapped(
+    RegExp(r'([?&]subtype=)0\b'),
+    (match) => '${match.group(1)}1',
+  );
+}
+
 String _formatBytes(int bytes) {
   if (bytes <= 0) {
     return '0 B';
@@ -1164,6 +2331,206 @@ String _formatBytes(int bytes) {
   }
 
   return '${size.toStringAsFixed(unitIndex == 0 ? 0 : 2)} ${units[unitIndex]}';
+}
+
+class NewStudentScreen extends StatefulWidget {
+  const NewStudentScreen({super.key});
+
+  static const routeName = '/new-student';
+
+  @override
+  State<NewStudentScreen> createState() => _NewStudentScreenState();
+}
+
+class _NewStudentScreenState extends State<NewStudentScreen> {
+  static const _filePickerChannel = MethodChannel('edge/file_picker');
+
+  final _nameController = TextEditingController();
+  final _studentIdController = TextEditingController();
+  final _backendController = TextEditingController(
+    text: AttendanceApiClient.defaultBaseUrl,
+  );
+  final List<PickedRagFile> _images = [];
+  bool _isSaving = false;
+  String? _message;
+
+  AttendanceApiClient get _client =>
+      AttendanceApiClient(_backendController.text.trim());
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _studentIdController.dispose();
+    _backendController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _addImage() async {
+    final result = await _filePickerChannel.invokeMapMethod<String, dynamic>(
+      'pickFile',
+    );
+    if (result == null) {
+      return;
+    }
+    final bytes = result['bytes'];
+    final name = result['name'];
+    if (bytes is Uint8List && name is String) {
+      setState(() => _images.add(PickedRagFile(name: name, bytes: bytes)));
+    }
+  }
+
+  Future<void> _saveStudent() async {
+    final name = _nameController.text.trim();
+    final studentId = _studentIdController.text.trim();
+    if (name.isEmpty || studentId.isEmpty) {
+      setState(() => _message = 'Student name and ID are required.');
+      return;
+    }
+    if (_images.length < 4) {
+      setState(() => _message = 'Upload at least 4 student images.');
+      return;
+    }
+
+    setState(() {
+      _isSaving = true;
+      _message = null;
+    });
+
+    try {
+      final imageUrls = <String>[];
+      for (var index = 0; index < _images.length; index++) {
+        final image = _images[index];
+        final path =
+            'attendance_student_images/${_safeStorageName(studentId)}/${index + 1}_${_safeStorageName(image.name)}';
+        final ref = FirebaseStorage.instance.ref(path);
+        await ref.putData(
+          image.bytes,
+          SettableMetadata(contentType: _verificationContentType(image.name)),
+        );
+        imageUrls.add(await ref.getDownloadURL());
+      }
+
+      final result = await _client.createAttendanceStudent(
+        name: name,
+        studentId: studentId,
+        images: _images,
+        imageUrls: imageUrls,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _message =
+            result['message']?.toString() ?? 'Student saved for attendance.';
+        _images.clear();
+        _nameController.clear();
+        _studentIdController.clear();
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Save failed: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!SessionScope.of(context).isAdmin) {
+      return const RagScreen();
+    }
+
+    return AppShell(
+      title: 'New Student',
+      selectedRoute: NewStudentScreen.routeName,
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: 'Student name',
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _studentIdController,
+              decoration: const InputDecoration(
+                labelText: 'Student ID',
+                prefixIcon: Icon(Icons.badge_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _backendController,
+              decoration: const InputDecoration(
+                labelText: 'Python backend URL',
+                prefixIcon: Icon(Icons.dns_outlined),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _isSaving ? null : _addImage,
+                    icon: const Icon(Icons.add_photo_alternate_outlined),
+                    label: Text('Add image (${_images.length}/4)'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (_images.isNotEmpty)
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (var index = 0; index < _images.length; index++)
+                    Chip(
+                      label: Text(_images[index].name),
+                      onDeleted: _isSaving
+                          ? null
+                          : () => setState(() => _images.removeAt(index)),
+                    ),
+                ],
+              ),
+            if (_message != null) ...[
+              const SizedBox(height: 12),
+              Text(_message!, style: const TextStyle(color: Color(0xFF52685A))),
+            ],
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: _isSaving ? null : _saveStudent,
+              icon: _isSaving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.cloud_upload_outlined),
+              label: Text(_isSaving ? 'Saving...' : 'Save student'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _safeStorageName(String value) {
+  return value
+      .trim()
+      .replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_')
+      .replaceAll(RegExp(r'_+'), '_');
 }
 
 class AttendenceScreen extends StatefulWidget {
@@ -1183,6 +2550,7 @@ class _AttendenceScreenState extends State<AttendenceScreen> {
   );
   Map<String, dynamic>? _status;
   List<dynamic> _records = [];
+  List<dynamic> _studentCalendar = [];
   String? _message;
   bool _isLoading = false;
   bool _isBuilding = false;
@@ -1211,8 +2579,12 @@ class _AttendenceScreenState extends State<AttendenceScreen> {
     });
 
     try {
-      final status = await _client.status();
-      final records = await _client.records();
+      final isAdmin = SessionScope.read(context).isAdmin;
+      final status = isAdmin ? await _client.status() : null;
+      final records = isAdmin ? await _client.records() : const <dynamic>[];
+      final studentCalendar = isAdmin
+          ? const <dynamic>[]
+          : await _client.myAttendanceCalendar();
       if (!mounted) {
         return;
       }
@@ -1220,6 +2592,7 @@ class _AttendenceScreenState extends State<AttendenceScreen> {
       setState(() {
         _status = status;
         _records = records;
+        _studentCalendar = studentCalendar;
       });
     } catch (error) {
       if (mounted) {
@@ -1284,7 +2657,9 @@ class _AttendenceScreenState extends State<AttendenceScreen> {
         _message = null;
       });
 
-      final match = await _client.matchFile(PickedRagFile(name: name, bytes: bytes));
+      final match = await _client.matchFile(
+        PickedRagFile(name: name, bytes: bytes),
+      );
       if (!mounted) {
         return;
       }
@@ -1337,10 +2712,33 @@ class _AttendenceScreenState extends State<AttendenceScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isAdmin = SessionScope.of(context).isAdmin;
     final status = _status;
     final students = status?['students'] is List
         ? status!['students'] as List<dynamic>
         : const <dynamic>[];
+
+    if (!isAdmin) {
+      return AppShell(
+        title: 'Attendence',
+        selectedRoute: AttendenceScreen.routeName,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _StudentAttendanceSummary(
+                isLoading: _isLoading,
+                message: _message,
+                rows: _studentCalendar,
+                onRefresh: _refresh,
+              ),
+              const SizedBox(height: 18),
+              _StudentAttendanceCalendar(rows: _studentCalendar),
+            ],
+          ),
+        ),
+      );
+    }
 
     return AppShell(
       title: 'Attendence',
@@ -1485,7 +2883,9 @@ class _AttendanceSummaryCard extends StatelessWidget {
                 ? 'Image matching is enabled for this local prototype.'
                 : 'Image matching is disabled until consent is enabled on the backend.',
             style: TextStyle(
-              color: consent ? const Color(0xFF16833B) : const Color(0xFFB3261E),
+              color: consent
+                  ? const Color(0xFF16833B)
+                  : const Color(0xFFB3261E),
             ),
           ),
           if (message != null) ...[
@@ -1494,6 +2894,127 @@ class _AttendanceSummaryCard extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+class _StudentAttendanceSummary extends StatelessWidget {
+  const _StudentAttendanceSummary({
+    required this.isLoading,
+    required this.message,
+    required this.rows,
+    required this.onRefresh,
+  });
+
+  final bool isLoading;
+  final String? message;
+  final List<dynamic> rows;
+  final Future<void> Function() onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final present = rows.where((row) {
+      final map = _advanceMap(row);
+      return map['status'] == 'present';
+    }).length;
+    final absent = rows.where((row) {
+      final map = _advanceMap(row);
+      return map['status'] == 'absent';
+    }).length;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4FBF6),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFD8EBDD)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.fact_check_outlined,
+                color: Color(0xFF16833B),
+                size: 32,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  isLoading ? 'Loading attendance...' : 'My attendance',
+                  style: const TextStyle(
+                    color: Color(0xFF123D22),
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              IconButton(
+                onPressed: isLoading ? null : onRefresh,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Present: $present  |  Absent: $absent',
+            style: const TextStyle(
+              color: Color(0xFF123D22),
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          if (message != null) ...[
+            const SizedBox(height: 10),
+            Text(message!, style: const TextStyle(color: Color(0xFF52685A))),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _StudentAttendanceCalendar extends StatelessWidget {
+  const _StudentAttendanceCalendar({required this.rows});
+
+  final List<dynamic> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    return _AttendanceSection(
+      title: 'Calendar',
+      emptyText: 'No attendance calendar available yet.',
+      children: [
+        for (final item in rows)
+          Builder(
+            builder: (context) {
+              final row = _advanceMap(item);
+              final status = row['status']?.toString() ?? 'no_record';
+              final color = status == 'present'
+                  ? const Color(0xFF16833B)
+                  : status == 'absent'
+                  ? const Color(0xFFB3261E)
+                  : const Color(0xFF7A5A00);
+              return ListTile(
+                leading: Icon(
+                  status == 'present'
+                      ? Icons.check_circle_outline_rounded
+                      : status == 'absent'
+                      ? Icons.cancel_outlined
+                      : Icons.radio_button_unchecked_rounded,
+                  color: color,
+                ),
+                title: Text(row['date']?.toString() ?? ''),
+                subtitle: Text(row['timestamp']?.toString() ?? ''),
+                trailing: Text(
+                  status.replaceAll('_', ' ').toUpperCase(),
+                  style: TextStyle(color: color, fontWeight: FontWeight.w800),
+                ),
+                dense: true,
+              );
+            },
+          ),
+      ],
     );
   }
 }
@@ -1598,6 +3119,791 @@ class _AttendanceSection extends StatelessWidget {
   }
 }
 
+class AdvanceSysScreen extends StatefulWidget {
+  const AdvanceSysScreen({super.key});
+
+  static const routeName = '/advance-sys';
+
+  @override
+  State<AdvanceSysScreen> createState() => _AdvanceSysScreenState();
+}
+
+class _AdvanceSysScreenState extends State<AdvanceSysScreen> {
+  final _backendController = TextEditingController(
+    text: AttendanceApiClient.defaultBaseUrl,
+  );
+  Timer? _pollTimer;
+  Map<String, dynamic>? _status;
+  List<dynamic> _events = [];
+  String? _message;
+  bool _isLoading = false;
+  bool _isStarting = false;
+  bool _isStopping = false;
+  bool _isClearing = false;
+
+  AttendanceApiClient get _client =>
+      AttendanceApiClient(_backendController.text.trim());
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_refresh());
+    _pollTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => unawaited(_refresh(quiet: true)),
+    );
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    _backendController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refresh({bool quiet = false}) async {
+    if (!quiet) {
+      setState(() {
+        _isLoading = true;
+        _message = null;
+      });
+    }
+
+    try {
+      final status = await _client.advanceSysStatus();
+      final events = await _client.advanceSysEvents();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _status = status;
+        _events = events;
+      });
+    } catch (error) {
+      if (mounted && !quiet) {
+        setState(() => _message = 'Advance Sys backend error: $error');
+      }
+    } finally {
+      if (mounted && !quiet) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Future<void> _start() async {
+    setState(() {
+      _isStarting = true;
+      _message = null;
+    });
+
+    try {
+      final status = await _client.advanceSysStart();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _status = status;
+        _message = 'Advance Sys monitoring started.';
+      });
+      await _refresh(quiet: true);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Could not start Advance Sys: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isStarting = false);
+      }
+    }
+  }
+
+  Future<void> _stop() async {
+    setState(() {
+      _isStopping = true;
+      _message = null;
+    });
+
+    try {
+      final status = await _client.advanceSysStop();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _status = status;
+        _message = 'Advance Sys monitoring stopped.';
+      });
+      await _refresh(quiet: true);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Could not stop Advance Sys: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isStopping = false);
+      }
+    }
+  }
+
+  Future<void> _clear() async {
+    setState(() {
+      _isClearing = true;
+      _message = null;
+    });
+
+    try {
+      final events = await _client.advanceSysClearEvents();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _events = events;
+        _message = 'Advance Sys events cleared.';
+      });
+      await _refresh(quiet: true);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Could not clear events: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isClearing = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final running = _status?['running'] == true;
+
+    return AppShell(
+      title: 'Advance Sys',
+      selectedRoute: AdvanceSysScreen.routeName,
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _AdvanceSysStatusCard(
+              backendController: _backendController,
+              status: _status,
+              message: _message,
+              isLoading: _isLoading,
+              isStarting: _isStarting,
+              isStopping: _isStopping,
+              isClearing: _isClearing,
+              onRefresh: _refresh,
+              onStart: running ? null : _start,
+              onStop: running ? _stop : null,
+              onClear: _clear,
+            ),
+            const SizedBox(height: 18),
+            _AdvanceSysEventsList(client: _client, events: _events),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AdvanceSysStatusCard extends StatelessWidget {
+  const _AdvanceSysStatusCard({
+    required this.backendController,
+    required this.status,
+    required this.message,
+    required this.isLoading,
+    required this.isStarting,
+    required this.isStopping,
+    required this.isClearing,
+    required this.onRefresh,
+    required this.onStart,
+    required this.onStop,
+    required this.onClear,
+  });
+
+  final TextEditingController backendController;
+  final Map<String, dynamic>? status;
+  final String? message;
+  final bool isLoading;
+  final bool isStarting;
+  final bool isStopping;
+  final bool isClearing;
+  final Future<void> Function({bool quiet}) onRefresh;
+  final VoidCallback? onStart;
+  final VoidCallback? onStop;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    final running = status?['running'] == true;
+    final azure = _advanceMap(status?['azure']);
+    final azureReady = azure['ready'] == true;
+    final lastEvent = _formatAdvanceTimestamp(status?['last_event_at']);
+    final lastMotion = _formatAdvanceTimestamp(status?['last_motion_at']);
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4FBF6),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFD8EBDD)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.motion_photos_on_outlined, color: primary, size: 34),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Advance Sys',
+                  style: TextStyle(
+                    color: Color(0xFF123D22),
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              _AdvanceSysPill(
+                label: running ? 'Monitoring' : 'Stopped',
+                color: running
+                    ? const Color(0xFF16833B)
+                    : const Color(0xFF7A5A00),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _AdvanceSysMetric(
+                icon: Icons.auto_awesome_outlined,
+                label: 'Azure',
+                value: azureReady ? 'Ready' : 'Needs config',
+              ),
+              _AdvanceSysMetric(
+                icon: Icons.photo_library_outlined,
+                label: 'Events',
+                value: '${status?['event_count'] ?? 0}',
+              ),
+              _AdvanceSysMetric(
+                icon: Icons.schedule_outlined,
+                label: 'Last event',
+                value: lastEvent,
+              ),
+              _AdvanceSysMetric(
+                icon: Icons.sensors_outlined,
+                label: 'Last motion',
+                value: lastMotion,
+              ),
+            ],
+          ),
+          if (status?['last_error'] != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              status!['last_error'].toString(),
+              style: const TextStyle(color: Color(0xFFB3261E)),
+            ),
+          ],
+          if (!azureReady) ...[
+            const SizedBox(height: 12),
+            Text(
+              azure['message']?.toString() ?? 'Azure OpenAI is not ready.',
+              style: const TextStyle(color: Color(0xFF7A5A00)),
+            ),
+          ],
+          if (message != null) ...[
+            const SizedBox(height: 12),
+            Text(message!, style: const TextStyle(color: Color(0xFF52685A))),
+          ],
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              SizedBox(
+                width: 170,
+                child: ElevatedButton.icon(
+                  onPressed: isStarting ? null : onStart,
+                  icon: isStarting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.play_arrow_rounded),
+                  label: Text(isStarting ? 'Starting...' : 'Start'),
+                ),
+              ),
+              SizedBox(
+                width: 170,
+                child: OutlinedButton.icon(
+                  onPressed: isStopping ? null : onStop,
+                  icon: isStopping
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.stop_rounded),
+                  label: Text(isStopping ? 'Stopping...' : 'Stop'),
+                ),
+              ),
+              SizedBox(
+                width: 170,
+                child: OutlinedButton.icon(
+                  onPressed: isLoading ? null : () => onRefresh(),
+                  icon: isLoading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh_rounded),
+                  label: Text(isLoading ? 'Refreshing...' : 'Refresh'),
+                ),
+              ),
+              SizedBox(
+                width: 170,
+                child: OutlinedButton.icon(
+                  onPressed: isClearing ? null : onClear,
+                  icon: isClearing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.delete_outline_rounded),
+                  label: Text(isClearing ? 'Clearing...' : 'Clear All'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: backendController,
+            decoration: const InputDecoration(
+              labelText: 'Python backend URL',
+              prefixIcon: Icon(Icons.dns_outlined),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdvanceSysMetric extends StatelessWidget {
+  const _AdvanceSysMetric({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 158,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFD8EBDD)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: const Color(0xFF16833B), size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF5D7465),
+                    fontSize: 12,
+                  ),
+                ),
+                Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF123D22),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdvanceSysEventsList extends StatelessWidget {
+  const _AdvanceSysEventsList({required this.client, required this.events});
+
+  final AttendanceApiClient client;
+  final List<dynamic> events;
+
+  @override
+  Widget build(BuildContext context) {
+    if (events.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFD8EBDD)),
+        ),
+        child: const Text(
+          'No motion events yet. Start monitoring and walk in front of the camera.',
+          style: TextStyle(color: Color(0xFF5D7465)),
+        ),
+      );
+    }
+
+    final ordered = events.reversed.toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'Motion Events',
+          style: TextStyle(
+            color: Color(0xFF123D22),
+            fontSize: 20,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 10),
+        for (final event in ordered) ...[
+          _AdvanceSysEventCard(client: client, event: _advanceMap(event)),
+          const SizedBox(height: 14),
+        ],
+      ],
+    );
+  }
+}
+
+class _AdvanceSysEventCard extends StatelessWidget {
+  const _AdvanceSysEventCard({required this.client, required this.event});
+
+  final AttendanceApiClient client;
+  final Map<String, dynamic> event;
+
+  @override
+  Widget build(BuildContext context) {
+    final eventId = event['event_id']?.toString() ?? '';
+    final frameCount = _advanceInt(event['frame_count'], fallback: 4);
+    final analysisStatus = event['analysis_status']?.toString() ?? 'unknown';
+    final confidence = _formatAdvanceConfidence(event['confidence']);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFD8EBDD)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(
+                Icons.sensors_rounded,
+                color: Color(0xFF16833B),
+                size: 32,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      event['scene_title']?.toString() ?? 'Motion detected',
+                      style: const TextStyle(
+                        color: Color(0xFF123D22),
+                        fontSize: 18,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    Text(
+                      _formatAdvanceTimestamp(event['timestamp']),
+                      style: const TextStyle(color: Color(0xFF5D7465)),
+                    ),
+                  ],
+                ),
+              ),
+              _AdvanceSysPill(
+                label: analysisStatus,
+                color: analysisStatus == 'ok'
+                    ? const Color(0xFF16833B)
+                    : const Color(0xFF7A5A00),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            event['summary']?.toString().trim().isNotEmpty == true
+                ? event['summary'].toString()
+                : 'No scene summary available.',
+            style: const TextStyle(color: Color(0xFF24382B), height: 1.35),
+          ),
+          const SizedBox(height: 12),
+          _AdvanceSysDetailRow(
+            icon: Icons.group_outlined,
+            label: 'Subjects',
+            value: event['visible_subjects']?.toString() ?? 'Not visible',
+          ),
+          _AdvanceSysDetailRow(
+            icon: Icons.shopping_bag_outlined,
+            label: 'Objects',
+            value: event['visible_objects']?.toString() ?? 'Nothing visible',
+          ),
+          _AdvanceSysDetailRow(
+            icon: Icons.directions_walk_outlined,
+            label: 'Action',
+            value: event['visible_action']?.toString() ?? 'Motion detected',
+          ),
+          _AdvanceSysDetailRow(
+            icon: Icons.place_outlined,
+            label: 'Location',
+            value: event['location_hint']?.toString() ?? 'Not visible',
+          ),
+          _AdvanceSysDetailRow(
+            icon: Icons.verified_user_outlined,
+            label: 'Confidence',
+            value: 'Azure $confidence',
+          ),
+          if (event['analysis_error'] != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              event['analysis_error'].toString(),
+              style: const TextStyle(color: Color(0xFFB3261E)),
+            ),
+          ],
+          const SizedBox(height: 12),
+          _AdvanceSysFrameGrid(
+            urls: [
+              for (var index = 1; index <= frameCount; index++)
+                client.advanceSysFrameUrl(eventId, index),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdvanceSysDetailRow extends StatelessWidget {
+  const _AdvanceSysDetailRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: const Color(0xFF52685A), size: 20),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 82,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Color(0xFF5D7465),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value.trim().isEmpty ? 'Not available' : value,
+              style: const TextStyle(color: Color(0xFF24382B)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdvanceSysFrameGrid extends StatefulWidget {
+  const _AdvanceSysFrameGrid({required this.urls});
+
+  final List<String> urls;
+
+  @override
+  State<_AdvanceSysFrameGrid> createState() => _AdvanceSysFrameGridState();
+}
+
+class _AdvanceSysFrameGridState extends State<_AdvanceSysFrameGrid> {
+  Map<String, String> _headers = const {};
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadHeaders());
+  }
+
+  Future<void> _loadHeaders() async {
+    final headers = await _firebaseAuthHeaderMap();
+    if (mounted) {
+      setState(() => _headers = headers);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth > 560 ? 4 : 2;
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: widget.urls.length,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
+            childAspectRatio: 16 / 9,
+          ),
+          itemBuilder: (context, index) {
+            return ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                color: Colors.black,
+                child: Image.network(
+                  widget.urls[index],
+                  headers: _headers.isEmpty ? null : _headers,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                  errorBuilder: (context, error, stackTrace) {
+                    return const Center(
+                      child: Icon(
+                        Icons.broken_image_outlined,
+                        color: Colors.white70,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _AdvanceSysPill extends StatelessWidget {
+  const _AdvanceSysPill({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+Map<String, dynamic> _advanceMap(Object? value) {
+  if (value is Map<String, dynamic>) {
+    return value;
+  }
+  if (value is Map) {
+    return value.map((key, item) => MapEntry(key.toString(), item));
+  }
+  return <String, dynamic>{};
+}
+
+List<String> _stringList(Object? value) {
+  if (value is List) {
+    return [
+      for (final item in value)
+        if (item != null) item.toString(),
+    ];
+  }
+  return const [];
+}
+
+int _advanceInt(Object? value, {required int fallback}) {
+  if (value is num) {
+    return value.toInt();
+  }
+  return fallback;
+}
+
+String _formatAdvanceTimestamp(Object? value) {
+  final text = value?.toString() ?? '';
+  if (text.isEmpty) {
+    return 'None';
+  }
+
+  final parsed = DateTime.tryParse(text);
+  if (parsed == null) {
+    return text;
+  }
+
+  final local = parsed.toLocal();
+  return '${local.year}-${_advanceTwo(local.month)}-${_advanceTwo(local.day)} '
+      '${_advanceTwo(local.hour)}:${_advanceTwo(local.minute)}';
+}
+
+String _formatAdvanceConfidence(Object? value) {
+  if (value is num) {
+    final normalized = value <= 1 ? value * 100 : value;
+    return '${normalized.toStringAsFixed(1)}%';
+  }
+  final text = value?.toString() ?? '';
+  return text.isEmpty ? 'n/a' : text;
+}
+
+String _advanceTwo(int value) => value.toString().padLeft(2, '0');
+
 class RagScreen extends StatefulWidget {
   const RagScreen({super.key});
 
@@ -1607,11 +3913,50 @@ class RagScreen extends StatefulWidget {
   State<RagScreen> createState() => _RagScreenState();
 }
 
+enum RagDomain { general, medical, engineering }
+
+extension RagDomainDetails on RagDomain {
+  String get label {
+    switch (this) {
+      case RagDomain.medical:
+        return 'Medical';
+      case RagDomain.engineering:
+        return 'Engineering';
+      case RagDomain.general:
+        return 'General';
+    }
+  }
+
+  String get apiValue => name;
+
+  IconData get icon {
+    switch (this) {
+      case RagDomain.medical:
+        return Icons.medical_services_outlined;
+      case RagDomain.engineering:
+        return Icons.engineering_outlined;
+      case RagDomain.general:
+        return Icons.school_outlined;
+    }
+  }
+
+  String get qwenInstruction {
+    switch (this) {
+      case RagDomain.medical:
+        return 'Medical mode: answer only educational medical questions. Do not provide diagnosis, prescription, dosage, or emergency advice.';
+      case RagDomain.engineering:
+        return 'Engineering mode: answer only engineering, technology, math, and technical study questions.';
+      case RagDomain.general:
+        return 'General study mode: answer student questions clearly and concisely.';
+    }
+  }
+}
+
 class _RagScreenState extends State<RagScreen> {
   static const _filePickerChannel = MethodChannel('edge/file_picker');
 
   final _backendController = TextEditingController(
-    text: 'http://10.0.2.2:8000',
+    text: RagApiClient.defaultBaseUrl,
   );
   final _questionController = TextEditingController();
   final _offlineQwen = OfflineQwenService();
@@ -1626,6 +3971,7 @@ class _RagScreenState extends State<RagScreen> {
   bool _isSending = false;
   bool _isUploadingFile = false;
   bool _useOfflineQwen = false;
+  RagDomain _selectedDomain = RagDomain.general;
 
   RagApiClient get _client => RagApiClient(_backendController.text.trim());
 
@@ -1651,13 +3997,31 @@ class _RagScreenState extends State<RagScreen> {
       _questionController.clear();
     });
 
+    final domainBlock = _domainBlockMessage(question);
+    if (domainBlock != null) {
+      setState(() {
+        _messages.add(RagMessage(text: domainBlock, isUser: false));
+        _isSending = false;
+      });
+      return;
+    }
+
     try {
       final context = _offlineContext(question);
       try {
         if (_useOfflineQwen && await _offlineQwen.isReady()) {
           final answer = context.isNotEmpty
-              ? await _offlineQwen.answer(question: question, context: context)
-              : await _offlineQwen.chat(question);
+              ? await _offlineQwen.answer(
+                  question: question,
+                  context: context,
+                  domainLabel: _selectedDomain.label,
+                  domainInstruction: _selectedDomain.qwenInstruction,
+                )
+              : await _offlineQwen.chat(
+                  question,
+                  domainLabel: _selectedDomain.label,
+                  domainInstruction: _selectedDomain.qwenInstruction,
+                );
 
           setState(() {
             _messages.add(
@@ -1666,7 +4030,7 @@ class _RagScreenState extends State<RagScreen> {
                 isUser: false,
                 sources: context.isEmpty
                     ? const []
-                    : _offlineDocuments.map((document) => document.id).toList(),
+                    : _offlineSourceIds(question),
               ),
             );
           });
@@ -1677,7 +4041,37 @@ class _RagScreenState extends State<RagScreen> {
         // Continue to backend or extractive local fallback.
       }
 
-      final answer = await _client.ask(question);
+      final fastLocalAnswer = _offlineAnswer(question);
+      if (fastLocalAnswer != null && !_useOfflineQwen) {
+        setState(() {
+          _messages.add(
+            RagMessage(
+              text: fastLocalAnswer,
+              isUser: false,
+              sources: _offlineSourceIds(question),
+            ),
+          );
+        });
+        return;
+      }
+
+      if (fastLocalAnswer != null && offlineQwenError != null) {
+        setState(() {
+          _messages.add(
+            RagMessage(
+              text: fastLocalAnswer,
+              isUser: false,
+              sources: _offlineSourceIds(question),
+            ),
+          );
+        });
+        return;
+      }
+
+      final answer = await _client.ask(
+        question,
+        domain: _selectedDomain.apiValue,
+      );
 
       setState(() {
         _messages.add(
@@ -1705,7 +4099,7 @@ class _RagScreenState extends State<RagScreen> {
             isUser: false,
             sources: offlineAnswer == null
                 ? const []
-                : _offlineDocuments.map((document) => document.id).toList(),
+                : _offlineSourceIds(question),
           ),
         );
       });
@@ -1734,7 +4128,9 @@ class _RagScreenState extends State<RagScreen> {
     }
 
     if (_offlineDocuments.isEmpty) {
-      parts.add('No local Rag document is loaded yet. Tap the paperclip to add a file.');
+      parts.add(
+        'No local Rag document is loaded yet. Tap the paperclip to add a file.',
+      );
     }
 
     parts.add('Backend detail: $backendError');
@@ -1742,10 +4138,10 @@ class _RagScreenState extends State<RagScreen> {
   }
 
   bool _isGreeting(String question) {
-    final clean = question.toLowerCase().replaceAll(
-      RegExp(r'[^a-z ]'),
-      '',
-    ).trim();
+    final clean = question
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z ]'), '')
+        .trim();
     return clean == 'hi' ||
         clean == 'hello' ||
         clean == 'hey' ||
@@ -1771,27 +4167,48 @@ class _RagScreenState extends State<RagScreen> {
 
       if (bytes is Uint8List && name is String) {
         final file = PickedRagFile(name: name, bytes: bytes);
+        final localText = _decodeOfflineFile(file.name, file.bytes);
         setState(() => _isUploadingFile = true);
 
         try {
-          final ids = await _client.ingestFile(file);
+          final ids = await _client.ingestFile(
+            file,
+            domain: _selectedDomain.apiValue,
+          );
+          _addOfflineDocument(file.name, localText);
 
           if (!mounted) {
             return;
           }
 
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Uploaded ${ids.length} document chunk(s).')),
+            SnackBar(
+              content: Text('Uploaded ${ids.length} document chunk(s).'),
+            ),
           );
         } catch (_) {
-          _addOfflineDocument(file.name, _decodeOfflineFile(file.bytes));
           if (!mounted) {
             return;
           }
 
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Document added locally.')),
-          );
+          if (localText.trim().isEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Could not extract this file locally. Start the Python backend for PDF/OCR files.',
+                ),
+              ),
+            );
+          } else {
+            _addOfflineDocument(file.name, localText);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Document added locally to ${_selectedDomain.label}.',
+                ),
+              ),
+            );
+          }
         } finally {
           if (mounted) {
             setState(() => _isUploadingFile = false);
@@ -1816,18 +4233,21 @@ class _RagScreenState extends State<RagScreen> {
     }
 
     _offlineDocuments.removeWhere((document) => document.id == id);
-    _offlineDocuments.add(OfflineRagDocument(id: id, text: cleanText));
+    _offlineDocuments.add(
+      OfflineRagDocument(id: id, text: cleanText, domain: _selectedDomain),
+    );
   }
 
   String? _offlineAnswer(String question) {
-    if (_offlineDocuments.isEmpty) {
+    final documents = _documentsForQuestion(question).toList();
+    if (documents.isEmpty) {
       return null;
     }
 
     final queryTokens = _ragTokens(question);
     final scoredLines = <ScoredLine>[];
 
-    for (final document in _offlineDocuments) {
+    for (final document in documents) {
       for (final line in document.text.split('\n')) {
         final score = _scoreRagText(queryTokens, line);
         if (score > 0) {
@@ -1861,14 +4281,15 @@ class _RagScreenState extends State<RagScreen> {
   }
 
   String _offlineContext(String question) {
-    if (_offlineDocuments.isEmpty) {
+    final documents = _documentsForQuestion(question).toList();
+    if (documents.isEmpty) {
       return '';
     }
 
     final queryTokens = _ragTokens(question);
     final scoredLines = <ScoredLine>[];
 
-    for (final document in _offlineDocuments) {
+    for (final document in documents) {
       for (final line in document.text.split('\n')) {
         final score = _scoreRagText(queryTokens, line);
         if (score > 0) {
@@ -1887,12 +4308,92 @@ class _RagScreenState extends State<RagScreen> {
     return scoredLines.take(12).map((line) => line.text).join('\n');
   }
 
-  String _decodeOfflineFile(Uint8List bytes) {
-    try {
-      return utf8.decode(bytes);
-    } catch (_) {
-      return latin1.decode(bytes);
+  Iterable<OfflineRagDocument> _documentsForQuestion(String question) {
+    final inferred = _inferRagDomain(question);
+
+    return _offlineDocuments.where((document) {
+      if (_selectedDomain != RagDomain.general) {
+        return document.domain == _selectedDomain ||
+            document.domain == RagDomain.general;
+      }
+
+      if (inferred != null) {
+        return document.domain == inferred ||
+            document.domain == RagDomain.general;
+      }
+
+      return true;
+    });
+  }
+
+  List<String> _offlineSourceIds(String question) {
+    final seen = <String>{};
+
+    return [
+      for (final document in _documentsForQuestion(question))
+        if (seen.add('${document.id}-${document.domain.name}'))
+          '${document.id} (${document.domain.label})',
+    ];
+  }
+
+  String? _domainBlockMessage(String question) {
+    if (_selectedDomain == RagDomain.general || _isGreeting(question)) {
+      return null;
     }
+
+    final inferred = _inferRagDomain(question);
+    if (inferred == null || inferred == _selectedDomain) {
+      return null;
+    }
+
+    return 'This Rag workspace is set to ${_selectedDomain.label}. I cannot answer ${inferred.label.toLowerCase()} questions here. Switch the domain to ${inferred.label} or General to ask this.';
+  }
+
+  String _decodeOfflineFile(String name, Uint8List bytes) {
+    final lowerName = name.toLowerCase();
+    final isPdf =
+        lowerName.endsWith('.pdf') ||
+        (bytes.length >= 4 &&
+            bytes[0] == 0x25 &&
+            bytes[1] == 0x50 &&
+            bytes[2] == 0x44 &&
+            bytes[3] == 0x46);
+
+    if (isPdf) {
+      return '';
+    }
+
+    try {
+      final decoded = utf8.decode(bytes, allowMalformed: false);
+      return _isMostlyReadableText(decoded) ? decoded : '';
+    } catch (_) {
+      final decoded = latin1.decode(bytes);
+      return _isMostlyReadableText(decoded) ? decoded : '';
+    }
+  }
+
+  bool _isMostlyReadableText(String text) {
+    if (text.trim().isEmpty) {
+      return false;
+    }
+
+    final sample = text.length > 4000 ? text.substring(0, 4000) : text;
+    var printable = 0;
+    var suspicious = 0;
+
+    for (final unit in sample.codeUnits) {
+      final isWhitespace = unit == 9 || unit == 10 || unit == 13 || unit == 32;
+      final isAsciiPrintable = unit >= 32 && unit <= 126;
+      final isLatinText = unit >= 160 && unit <= 591;
+
+      if (isWhitespace || isAsciiPrintable || isLatinText) {
+        printable++;
+      } else {
+        suspicious++;
+      }
+    }
+
+    return printable >= 40 && suspicious / sample.length < 0.08;
   }
 
   @override
@@ -1902,6 +4403,47 @@ class _RagScreenState extends State<RagScreen> {
       selectedRoute: RagScreen.routeName,
       bodyPadding: EdgeInsets.zero,
       actions: [
+        Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: PopupMenuButton<RagDomain>(
+            initialValue: _selectedDomain,
+            onSelected: (domain) => setState(() => _selectedDomain = domain),
+            itemBuilder: (context) => [
+              for (final domain in RagDomain.values)
+                PopupMenuItem(
+                  value: domain,
+                  child: Row(
+                    children: [
+                      Icon(domain.icon, size: 18),
+                      const SizedBox(width: 10),
+                      Text(domain.label),
+                    ],
+                  ),
+                ),
+            ],
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(_selectedDomain.icon, color: Colors.white, size: 18),
+                  const SizedBox(width: 6),
+                  Text(
+                    _selectedDomain.label,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
         Padding(
           padding: const EdgeInsets.only(right: 10),
           child: TextButton.icon(
@@ -1984,58 +4526,58 @@ class RagWorkspace extends StatelessWidget {
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: 56),
             child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF4FBF6),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: const Color(0xFFD8EBDD)),
-            ),
-            child: Row(
-              children: [
-                IconButton(
-                  tooltip: 'Attach document',
-                  onPressed: isUploadingFile ? null : onAttachDocument,
-                  icon: isUploadingFile
-                      ? SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: primary,
-                          ),
-                        )
-                      : const Icon(Icons.attach_file_rounded),
-                ),
-                Expanded(
-                  child: TextField(
-                    controller: questionController,
-                    minLines: 1,
-                    maxLines: 4,
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => onSend(),
-                    decoration: const InputDecoration.collapsed(
-                      hintText: 'Ask anything...',
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF4FBF6),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: const Color(0xFFD8EBDD)),
+              ),
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Attach document',
+                    onPressed: isUploadingFile ? null : onAttachDocument,
+                    icon: isUploadingFile
+                        ? SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: primary,
+                            ),
+                          )
+                        : const Icon(Icons.attach_file_rounded),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: questionController,
+                      minLines: 1,
+                      maxLines: 4,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => onSend(),
+                      decoration: const InputDecoration.collapsed(
+                        hintText: 'Ask anything...',
+                      ),
                     ),
                   ),
-                ),
-                IconButton.filled(
-                  tooltip: 'Send',
-                  onPressed: isSending ? null : onSend,
-                  icon: isSending
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Icon(Icons.send_rounded),
-                ),
-              ],
+                  IconButton.filled(
+                    tooltip: 'Send',
+                    onPressed: isSending ? null : onSend,
+                    icon: isSending
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.send_rounded),
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
         ),
       ],
     );
@@ -2116,10 +4658,35 @@ class PickedRagFile {
   final Uint8List bytes;
 }
 
+Future<String?> _firebaseIdToken() async {
+  try {
+    final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+    return token == null || token.isEmpty ? null : token;
+  } catch (_) {
+    // Firebase is not configured yet or the user is signed out.
+    return null;
+  }
+}
+
+Future<Map<String, String>> _firebaseAuthHeaderMap() async {
+  final token = await _firebaseIdToken();
+  if (token == null) {
+    return const {};
+  }
+  return {HttpHeaders.authorizationHeader: 'Bearer $token'};
+}
+
+Future<void> _addFirebaseAuthHeader(HttpHeaders headers) async {
+  final token = await _firebaseIdToken();
+  if (token != null) {
+    headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+  }
+}
+
 class AttendanceApiClient {
   AttendanceApiClient(this.baseUrl);
 
-  static const defaultBaseUrl = 'http://192.168.1.8:8000';
+  static const defaultBaseUrl = 'http://192.168.1.6:8000';
 
   final String baseUrl;
 
@@ -2137,6 +4704,12 @@ class AttendanceApiClient {
     return records is List ? records : const [];
   }
 
+  Future<List<dynamic>> myAttendanceCalendar() async {
+    final payload = await _get('/attendance/me/calendar');
+    final rows = payload['calendar'];
+    return rows is List ? rows : const [];
+  }
+
   Future<Map<String, dynamic>> setStreamConfig(String rtspUrl) async {
     return _post('/attendance/stream/config', {'rtsp_url': rtspUrl});
   }
@@ -2145,9 +4718,126 @@ class AttendanceApiClient {
     return _post('/attendance/stream/check', {});
   }
 
+  Future<Map<String, dynamic>> advanceSysStatus() async {
+    return _get('/advance-sys/status');
+  }
+
+  Future<Map<String, dynamic>> advanceSysStart() async {
+    return _post('/advance-sys/start', {});
+  }
+
+  Future<Map<String, dynamic>> advanceSysStop() async {
+    return _post('/advance-sys/stop', {});
+  }
+
+  Future<List<dynamic>> advanceSysEvents() async {
+    final payload = await _get('/advance-sys/events');
+    final events = payload['events'];
+    return events is List ? events : const [];
+  }
+
+  Future<List<dynamic>> advanceSysClearEvents() async {
+    final payload = await _delete('/advance-sys/events');
+    final events = payload['events'];
+    return events is List ? events : const [];
+  }
+
+  String advanceSysFrameUrl(String eventId, int frameIndex) {
+    final base = _candidateBaseUrls().first;
+    final encodedId = Uri.encodeComponent(eventId);
+    return '$base/advance-sys/events/$encodedId/frames/$frameIndex';
+  }
+
   String streamFrameUrl(int tick) {
     final base = _candidateBaseUrls().first;
     return '$base/attendance/stream/frame?t=$tick';
+  }
+
+  Future<Map<String, dynamic>> createAttendanceStudent({
+    required String name,
+    required String studentId,
+    required List<PickedRagFile> images,
+    required List<String> imageUrls,
+  }) async {
+    final boundary =
+        'edge-new-student-${DateTime.now().microsecondsSinceEpoch}';
+    Object? lastError;
+
+    for (final candidate in _candidateBaseUrls()) {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
+      final uri = Uri.parse('$candidate/admin/students/attendance');
+
+      try {
+        final request = await client
+            .postUrl(uri)
+            .timeout(const Duration(seconds: 3));
+        request.headers.set(
+          HttpHeaders.contentTypeHeader,
+          'multipart/form-data; boundary=$boundary',
+        );
+        await _addFirebaseAuthHeader(request.headers);
+        _addMultipartField(request, boundary, 'name', name);
+        _addMultipartField(request, boundary, 'student_id', studentId);
+        _addMultipartField(
+          request,
+          boundary,
+          'image_urls',
+          jsonEncode(imageUrls),
+        );
+        for (final image in images) {
+          request.add(utf8.encode('--$boundary\r\n'));
+          request.add(
+            utf8.encode(
+              'Content-Disposition: form-data; name="files"; filename="${image.name}"\r\n',
+            ),
+          );
+          request.add(
+            utf8.encode(
+              'Content-Type: ${_verificationContentType(image.name)}\r\n\r\n',
+            ),
+          );
+          request.add(image.bytes);
+          request.add(utf8.encode('\r\n'));
+        }
+        request.add(utf8.encode('--$boundary--\r\n'));
+
+        final response = await request.close().timeout(
+          const Duration(seconds: 60),
+        );
+        final text = await response.transform(utf8.decoder).join();
+        final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+
+        if (response.statusCode >= 400) {
+          final detail = decoded is Map ? decoded['detail'] : text;
+          lastError = Exception(detail ?? 'HTTP ${response.statusCode}');
+          continue;
+        }
+
+        if (decoded is Map<String, dynamic>) {
+          return decoded;
+        }
+        lastError = const FormatException('Unexpected backend response');
+      } catch (error) {
+        lastError = error;
+      } finally {
+        client.close();
+      }
+    }
+
+    throw Exception(
+      'Attendance backend is not running at $defaultBaseUrl. Last error: $lastError',
+    );
+  }
+
+  Future<Map<String, dynamic>> approveStudent(String uid) {
+    return _post('/admin/students/${Uri.encodeComponent(uid)}/approve', {});
+  }
+
+  Future<Map<String, dynamic>> rejectStudent(String uid, String reason) {
+    return _post('/admin/students/${Uri.encodeComponent(uid)}/reject', {
+      'reason': reason,
+    });
   }
 
   Future<Map<String, dynamic>> matchFile(PickedRagFile file) async {
@@ -2167,6 +4857,7 @@ class AttendanceApiClient {
           HttpHeaders.contentTypeHeader,
           'multipart/form-data; boundary=$boundary',
         );
+        await _addFirebaseAuthHeader(request.headers);
         request.add(utf8.encode('--$boundary\r\n'));
         request.add(
           utf8.encode(
@@ -2206,6 +4897,20 @@ class AttendanceApiClient {
     );
   }
 
+  void _addMultipartField(
+    HttpClientRequest request,
+    String boundary,
+    String name,
+    String value,
+  ) {
+    request.add(utf8.encode('--$boundary\r\n'));
+    request.add(
+      utf8.encode('Content-Disposition: form-data; name="$name"\r\n\r\n'),
+    );
+    request.add(utf8.encode(value));
+    request.add(utf8.encode('\r\n'));
+  }
+
   Future<Map<String, dynamic>> _get(String path) async {
     Object? lastError;
 
@@ -2217,8 +4922,53 @@ class AttendanceApiClient {
         final response = await client
             .getUrl(Uri.parse('$candidate$path'))
             .timeout(const Duration(seconds: 3))
-            .then((request) => request.close())
+            .then((request) async {
+              await _addFirebaseAuthHeader(request.headers);
+              return request.close();
+            })
             .timeout(const Duration(seconds: 5));
+        final text = await response.transform(utf8.decoder).join();
+        final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+
+        if (response.statusCode >= 400) {
+          final detail = decoded is Map ? decoded['detail'] : text;
+          lastError = Exception(detail ?? 'HTTP ${response.statusCode}');
+          continue;
+        }
+
+        if (decoded is Map<String, dynamic>) {
+          return decoded;
+        }
+
+        lastError = const FormatException('Unexpected backend response');
+      } catch (error) {
+        lastError = error;
+      } finally {
+        client.close();
+      }
+    }
+
+    throw Exception(
+      'Attendance backend is not running at $defaultBaseUrl. Last error: $lastError',
+    );
+  }
+
+  Future<Map<String, dynamic>> _delete(String path) async {
+    Object? lastError;
+
+    for (final candidate in _candidateBaseUrls()) {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 3);
+
+      try {
+        final response = await client
+            .deleteUrl(Uri.parse('$candidate$path'))
+            .timeout(const Duration(seconds: 3))
+            .then((request) async {
+              await _addFirebaseAuthHeader(request.headers);
+              return request.close();
+            })
+            .timeout(const Duration(seconds: 10));
         final text = await response.transform(utf8.decoder).join();
         final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
 
@@ -2260,6 +5010,7 @@ class AttendanceApiClient {
             .postUrl(Uri.parse('$candidate$path'))
             .timeout(const Duration(seconds: 3));
         request.headers.contentType = ContentType.json;
+        await _addFirebaseAuthHeader(request.headers);
         request.write(jsonEncode(body));
 
         final response = await request.close().timeout(
@@ -2296,6 +5047,8 @@ class AttendanceApiClient {
     final urls = <String>[
       if (typed.isNotEmpty) typed,
       defaultBaseUrl,
+      'http://10.0.2.2:8000',
+      'http://127.0.0.1:8000',
     ];
     final seen = <String>{};
 
@@ -2317,11 +5070,9 @@ class AttendanceApiClient {
       return '';
     }
 
-    final isLocalHost =
-        uri.host == 'localhost' ||
-        uri.host == '127.0.0.1' ||
-        uri.host == '10.0.2.2';
-    if (isLocalHost) {
+    final isUnsupportedLocalHost =
+        uri.host == 'localhost' || uri.host == '127.0.0.1';
+    if (isUnsupportedLocalHost) {
       return '';
     }
 
@@ -2347,36 +5098,42 @@ class OfflineQwenService {
   Future<String> answer({
     required String question,
     required String context,
+    required String domainLabel,
+    required String domainInstruction,
   }) async {
     return _generate(
       messages: [
         ChatMessage(
           role: 'system',
           content:
-              'You are an offline RAG assistant for students. Answer only from the supplied context. If the answer is not in the context, say you do not know.',
+              'You are an offline $domainLabel RAG assistant for students. $domainInstruction Answer only from the supplied context. If the answer is not in the context, say you do not know.',
         ),
         ChatMessage(
           role: 'user',
           content: 'Context:\n$context\n\nQuestion:\n$question\n\nAnswer:',
         ),
       ],
-      temperature: 0.2,
-      maxTokens: 120,
+      temperature: 0.1,
+      maxTokens: 80,
     );
   }
 
-  Future<String> chat(String question) async {
+  Future<String> chat(
+    String question, {
+    required String domainLabel,
+    required String domainInstruction,
+  }) async {
     return _generate(
       messages: [
         ChatMessage(
           role: 'system',
           content:
-              'You are Qwen running offline inside the Edge Android app. Be helpful, concise, and clear for a student.',
+              'You are Qwen running offline inside the Edge Android app in $domainLabel mode. $domainInstruction Refuse questions outside this mode.',
         ),
         ChatMessage(role: 'user', content: question),
       ],
-      temperature: 0.6,
-      maxTokens: 140,
+      temperature: 0.3,
+      maxTokens: 90,
     );
   }
 
@@ -2393,28 +5150,37 @@ class OfflineQwenService {
       template: 'chatml',
       maxTokens: maxTokens,
       temperature: temperature,
-      topP: 0.85,
-      topK: 30,
+      topP: 0.8,
+      topK: 20,
       minP: 0.05,
       repeatPenalty: 1.12,
       repeatLastN: 64,
       seed: DateTime.now().millisecondsSinceEpoch,
     );
 
-    await for (final token in stream.timeout(
-      const Duration(seconds: 90),
-      onTimeout: (sink) {
-        sink.addError(
-          TimeoutException('Offline Qwen took too long to answer.'),
-        );
-        sink.close();
-      },
-    )) {
-      buffer.write(token);
+    try {
+      await for (final token in stream.timeout(
+        const Duration(seconds: 45),
+        onTimeout: (sink) {
+          sink.addError(
+            TimeoutException('Offline Qwen took too long to answer.'),
+          );
+          sink.close();
+        },
+      )) {
+        buffer.write(token);
+      }
+    } on TimeoutException {
+      unawaited(_controller.stop());
+      rethrow;
     }
 
-    final answer = buffer.toString().trim();
-    return answer.isEmpty ? 'I could not generate an offline answer.' : answer;
+    final answer = _cleanGeneratedAnswer(buffer.toString());
+    if (_looksLikeBadGeneration(answer)) {
+      throw const FormatException('Offline Qwen returned unreadable text.');
+    }
+
+    return answer;
   }
 
   Future<void> _ensureLoaded() async {
@@ -2434,12 +5200,14 @@ class OfflineQwenService {
       }
 
       await _validateRuntimeDevice();
-      await _controller.loadModel(
-        modelPath: modelPath,
-        threads: 2,
-        contextSize: 512,
-        gpuLayers: 0,
-      ).timeout(const Duration(minutes: 3));
+      await _controller
+          .loadModel(
+            modelPath: modelPath,
+            threads: 4,
+            contextSize: 512,
+            gpuLayers: 0,
+          )
+          .timeout(const Duration(minutes: 3));
       _loaded = true;
     } catch (_) {
       _loadFuture = null;
@@ -2533,13 +5301,77 @@ class OfflineQwenService {
 
     return 0;
   }
+
+  String _cleanGeneratedAnswer(String raw) {
+    var text = raw
+        .replaceAll('\u0000', '')
+        .replaceAll('\uFFFD', '')
+        .replaceAll('<|im_start|>', '')
+        .replaceAll('<|im_end|>', '')
+        .replaceAll('<|endoftext|>', '')
+        .replaceAll(RegExp(r'<\|[^>]{1,48}\|>'), ' ')
+        .replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'), '');
+
+    final lower = text.toLowerCase();
+    final answerIndex = lower.lastIndexOf('answer:');
+    if (answerIndex >= 0 && answerIndex < text.length - 7) {
+      text = text.substring(answerIndex + 7);
+    }
+
+    return text.split('\n').map((line) => line.trimRight()).join('\n').trim();
+  }
+
+  bool _looksLikeBadGeneration(String text) {
+    if (text.isEmpty || text.contains('\uFFFD')) {
+      return true;
+    }
+
+    final sample = text.length > 1000 ? text.substring(0, 1000) : text;
+    var lettersOrDigits = 0;
+    var readable = 0;
+    var suspicious = 0;
+
+    for (final unit in sample.codeUnits) {
+      final isLetterOrDigit =
+          (unit >= 48 && unit <= 57) ||
+          (unit >= 65 && unit <= 90) ||
+          (unit >= 97 && unit <= 122);
+      final isWhitespace = unit == 9 || unit == 10 || unit == 13 || unit == 32;
+      final isPunctuation = '.,;:!?()[]{}\'"-/%'.codeUnits.contains(unit);
+
+      if (isLetterOrDigit) {
+        lettersOrDigits++;
+      }
+
+      if (isLetterOrDigit || isWhitespace || isPunctuation) {
+        readable++;
+      } else {
+        suspicious++;
+      }
+    }
+
+    if (sample.length > 16 && lettersOrDigits < 3) {
+      return true;
+    }
+
+    if (sample.isNotEmpty && suspicious / sample.length > 0.18) {
+      return true;
+    }
+
+    return RegExp(r'([^a-zA-Z0-9\s])\1{7,}').hasMatch(sample) || readable == 0;
+  }
 }
 
 class OfflineRagDocument {
-  const OfflineRagDocument({required this.id, required this.text});
+  const OfflineRagDocument({
+    required this.id,
+    required this.text,
+    required this.domain,
+  });
 
   final String id;
   final String text;
+  final RagDomain domain;
 }
 
 class ScoredLine {
@@ -2548,6 +5380,113 @@ class ScoredLine {
   final int score;
   final String text;
 }
+
+RagDomain? _inferRagDomain(String text) {
+  final normalized = text.toLowerCase();
+  final medicalScore = _domainKeywordScore(normalized, _medicalKeywords);
+  final engineeringScore = _domainKeywordScore(
+    normalized,
+    _engineeringKeywords,
+  );
+
+  if (medicalScore == 0 && engineeringScore == 0) {
+    return null;
+  }
+
+  if (medicalScore > engineeringScore) {
+    return RagDomain.medical;
+  }
+
+  if (engineeringScore > medicalScore) {
+    return RagDomain.engineering;
+  }
+
+  return null;
+}
+
+int _domainKeywordScore(String text, List<String> keywords) {
+  var score = 0;
+
+  for (final keyword in keywords) {
+    final pattern = RegExp(
+      '\\b${RegExp.escape(keyword.toLowerCase())}\\b',
+      caseSensitive: false,
+    );
+    if (pattern.hasMatch(text)) {
+      score++;
+    }
+  }
+
+  return score;
+}
+
+const _medicalKeywords = [
+  'anatomy',
+  'bacteria',
+  'blood',
+  'cancer',
+  'clinical',
+  'diagnosis',
+  'diabetes',
+  'disease',
+  'doctor',
+  'dosage',
+  'drug',
+  'fever',
+  'health',
+  'heart',
+  'hospital',
+  'infection',
+  'kidney',
+  'liver',
+  'medical',
+  'medicine',
+  'nursing',
+  'pathology',
+  'patient',
+  'pharmacology',
+  'physiology',
+  'surgery',
+  'symptom',
+  'therapy',
+  'treatment',
+  'vaccine',
+  'virus',
+];
+
+const _engineeringKeywords = [
+  'algorithm',
+  'beam',
+  'bridge',
+  'circuit',
+  'civil',
+  'coding',
+  'compiler',
+  'current',
+  'database',
+  'electrical',
+  'electronics',
+  'engineer',
+  'engineering',
+  'fluid',
+  'gear',
+  'machine',
+  'mechanical',
+  'mechanics',
+  'microcontroller',
+  'motor',
+  'network',
+  'ohm',
+  'programming',
+  'sensor',
+  'software',
+  'strain',
+  'stress',
+  'thermodynamics',
+  'torque',
+  'transistor',
+  'voltage',
+];
 
 List<String> _ragTokens(String text) {
   const stopWords = {
@@ -2596,12 +5535,19 @@ int _scoreRagText(List<String> queryTokens, String text) {
 class RagApiClient {
   RagApiClient(this.baseUrl);
 
+  static const defaultBaseUrl = 'http://192.168.1.6:8000';
+
   final String baseUrl;
 
-  Future<List<String>> ingestText(String fileName, String text) async {
+  Future<List<String>> ingestText(
+    String fileName,
+    String text, {
+    String domain = 'general',
+  }) async {
     final payload = await _post('/rag/ingest-text', {
       'file_name': fileName,
       'text': text,
+      'domain': domain,
     });
 
     final ids = payload['document_ids'];
@@ -2621,7 +5567,10 @@ class RagApiClient {
     return _documentIds(payload);
   }
 
-  Future<List<String>> ingestFile(PickedRagFile file) async {
+  Future<List<String>> ingestFile(
+    PickedRagFile file, {
+    String domain = 'general',
+  }) async {
     final boundary = 'edge-rag-${DateTime.now().microsecondsSinceEpoch}';
     Object? lastError;
 
@@ -2638,6 +5587,7 @@ class RagApiClient {
           HttpHeaders.contentTypeHeader,
           'multipart/form-data; boundary=$boundary',
         );
+        await _addFirebaseAuthHeader(request.headers);
         request.add(utf8.encode('--$boundary\r\n'));
         request.add(
           utf8.encode(
@@ -2648,6 +5598,12 @@ class RagApiClient {
           utf8.encode('Content-Type: application/octet-stream\r\n\r\n'),
         );
         request.add(file.bytes);
+        request.add(utf8.encode('\r\n--$boundary\r\n'));
+        request.add(
+          utf8.encode(
+            'Content-Disposition: form-data; name="domain"\r\n\r\n$domain',
+          ),
+        );
         request.add(utf8.encode('\r\n--$boundary--\r\n'));
 
         final response = await request.close().timeout(
@@ -2677,8 +5633,11 @@ class RagApiClient {
     throw Exception('Backend not reachable. Last error: $lastError');
   }
 
-  Future<RagAnswer> ask(String message) async {
-    final payload = await _post('/rag/chat', {'message': message});
+  Future<RagAnswer> ask(String message, {String domain = 'general'}) async {
+    final payload = await _post('/rag/chat', {
+      'message': message,
+      'domain': domain,
+    });
     final sources = payload['sources'];
 
     return RagAnswer(
@@ -2713,6 +5672,7 @@ class RagApiClient {
       try {
         final request = await client.postUrl(uri).timeout(timeout);
         request.headers.contentType = ContentType.json;
+        await _addFirebaseAuthHeader(request.headers);
         request.write(jsonEncode(body));
 
         final response = await request.close().timeout(timeout);
@@ -2744,6 +5704,7 @@ class RagApiClient {
     final typed = _usableBaseUrl(baseUrl);
     final urls = <String>[
       if (typed.isNotEmpty) typed,
+      defaultBaseUrl,
       'http://10.0.2.2:8000',
       'http://127.0.0.1:8000',
       'http://localhost:8000',
@@ -2774,6 +5735,315 @@ class RagApiClient {
     }
 
     return clean;
+  }
+}
+
+class StudentApprovalsScreen extends StatefulWidget {
+  const StudentApprovalsScreen({super.key});
+
+  static const routeName = '/student-approvals';
+
+  @override
+  State<StudentApprovalsScreen> createState() => _StudentApprovalsScreenState();
+}
+
+class _StudentApprovalsScreenState extends State<StudentApprovalsScreen> {
+  final _client = AttendanceApiClient(AttendanceApiClient.defaultBaseUrl);
+  List<dynamic> _students = [];
+  String? _message;
+  bool _isLoading = false;
+  String? _busyUid;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_refresh());
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _isLoading = true;
+      _message = null;
+    });
+
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .where('role', isEqualTo: 'student')
+          .where('status', isEqualTo: 'pending')
+          .get();
+      final students = [
+        for (final doc in snapshot.docs) {'uid': doc.id, ...doc.data()},
+      ];
+      students.sort(
+        (left, right) => (left['displayName'] ?? '').toString().compareTo(
+          (right['displayName'] ?? '').toString(),
+        ),
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() => _students = students);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Could not load approvals: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Future<void> _approve(String uid) async {
+    try {
+      setState(() {
+        _busyUid = uid;
+        _message = null;
+      });
+      await _client.approveStudent(uid);
+      await _refresh();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Approve failed: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _busyUid = null);
+      }
+    }
+  }
+
+  Future<void> _reject(String uid) async {
+    final reasonController = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Reject student'),
+          content: TextField(
+            controller: reasonController,
+            decoration: const InputDecoration(labelText: 'Reason'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.pop(context, reasonController.text.trim()),
+              child: const Text('Reject'),
+            ),
+          ],
+        );
+      },
+    );
+    reasonController.dispose();
+
+    if (reason == null) {
+      return;
+    }
+
+    try {
+      setState(() {
+        _busyUid = uid;
+        _message = null;
+      });
+      await _client.rejectStudent(uid, reason);
+      await _refresh();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = 'Reject failed: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _busyUid = null);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!SessionScope.of(context).isAdmin) {
+      return const RagScreen();
+    }
+
+    return AppShell(
+      title: 'Student Approvals',
+      selectedRoute: StudentApprovalsScreen.routeName,
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF4FBF6),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFD8EBDD)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.verified_user_outlined,
+                    color: Color(0xFF16833B),
+                    size: 32,
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Pending student verification',
+                      style: TextStyle(
+                        color: Color(0xFF123D22),
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _isLoading ? null : _refresh,
+                    icon: _isLoading
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh_rounded),
+                  ),
+                ],
+              ),
+            ),
+            if (_message != null) ...[
+              const SizedBox(height: 12),
+              Text(_message!, style: const TextStyle(color: Color(0xFFB3261E))),
+            ],
+            const SizedBox(height: 14),
+            if (_students.isEmpty)
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFFD8EBDD)),
+                ),
+                child: const Text(
+                  'No pending students.',
+                  style: TextStyle(color: Color(0xFF5D7465)),
+                ),
+              )
+            else
+              for (final student in _students) ...[
+                _PendingStudentCard(
+                  student: _advanceMap(student),
+                  isBusy: _busyUid == _advanceMap(student)['uid']?.toString(),
+                  onApprove: () =>
+                      _approve(_advanceMap(student)['uid']?.toString() ?? ''),
+                  onReject: () =>
+                      _reject(_advanceMap(student)['uid']?.toString() ?? ''),
+                ),
+                const SizedBox(height: 12),
+              ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PendingStudentCard extends StatelessWidget {
+  const _PendingStudentCard({
+    required this.student,
+    required this.isBusy,
+    required this.onApprove,
+    required this.onReject,
+  });
+
+  final Map<String, dynamic> student;
+  final bool isBusy;
+  final VoidCallback onApprove;
+  final VoidCallback onReject;
+
+  @override
+  Widget build(BuildContext context) {
+    final imageUrls = _stringList(student['attendanceImageUrls']);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFD8EBDD)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            student['displayName']?.toString() ?? 'Student',
+            style: const TextStyle(
+              color: Color(0xFF123D22),
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${student['email'] ?? ''}  |  Student ID: ${student['studentId'] ?? ''}',
+            style: const TextStyle(color: Color(0xFF5D7465)),
+          ),
+          const SizedBox(height: 12),
+          if (imageUrls.isEmpty)
+            const Text(
+              'No attendance photos submitted.',
+              style: TextStyle(color: Color(0xFF52685A)),
+            )
+          else
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                crossAxisSpacing: 8,
+                mainAxisSpacing: 8,
+                childAspectRatio: 1.15,
+              ),
+              itemCount: imageUrls.length,
+              itemBuilder: (context, index) {
+                return ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.network(imageUrls[index], fit: BoxFit.cover),
+                );
+              },
+            ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: isBusy ? null : onApprove,
+                  icon: isBusy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.check_rounded),
+                  label: const Text('Approve + Embed'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: isBusy ? null : onReject,
+                  icon: const Icon(Icons.close_rounded),
+                  label: const Text('Reject'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -2838,6 +6108,9 @@ class AppNavigationDrawer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final primary = Theme.of(context).colorScheme.primary;
+    final session = SessionScope.of(context);
+    final profile = session.profile;
+    final isAdmin = profile?.isAdmin == true;
 
     return Drawer(
       backgroundColor: Colors.white,
@@ -2882,18 +6155,40 @@ class AppNavigationDrawer extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            DrawerMenuItem(
-              icon: Icons.dashboard_outlined,
-              label: 'Dashboard',
-              routeName: DashboardScreen.routeName,
-              selectedRoute: selectedRoute,
-            ),
+            if (isAdmin)
+              DrawerMenuItem(
+                icon: Icons.dashboard_outlined,
+                label: 'Dashboard',
+                routeName: DashboardScreen.routeName,
+                selectedRoute: selectedRoute,
+              ),
             DrawerMenuItem(
               icon: Icons.fact_check_outlined,
               label: 'Attendence',
               routeName: AttendenceScreen.routeName,
               selectedRoute: selectedRoute,
             ),
+            if (isAdmin)
+              DrawerMenuItem(
+                icon: Icons.person_add_alt_1_outlined,
+                label: 'New Student',
+                routeName: NewStudentScreen.routeName,
+                selectedRoute: selectedRoute,
+              ),
+            if (isAdmin)
+              DrawerMenuItem(
+                icon: Icons.motion_photos_on_outlined,
+                label: 'Advance Sys',
+                routeName: AdvanceSysScreen.routeName,
+                selectedRoute: selectedRoute,
+              ),
+            if (isAdmin)
+              DrawerMenuItem(
+                icon: Icons.verified_user_outlined,
+                label: 'Approvals',
+                routeName: StudentApprovalsScreen.routeName,
+                selectedRoute: selectedRoute,
+              ),
             DrawerMenuItem(
               icon: Icons.analytics_outlined,
               label: 'Rag',
@@ -2905,6 +6200,17 @@ class AppNavigationDrawer extends StatelessWidget {
               label: 'Setting',
               routeName: SettingScreen.routeName,
               selectedRoute: selectedRoute,
+            ),
+            const Spacer(),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: OutlinedButton.icon(
+                onPressed: () => FirebaseAuth.instance.signOut(),
+                icon: const Icon(Icons.logout_rounded),
+                label: Text(
+                  profile?.email.isNotEmpty == true ? 'Sign out' : 'Sign out',
+                ),
+              ),
             ),
           ],
         ),
@@ -3006,12 +6312,4 @@ class FeaturePanel extends StatelessWidget {
       ],
     );
   }
-}
-
-void _goToDashboard(BuildContext context) {
-  Navigator.pushNamedAndRemoveUntil(
-    context,
-    DashboardScreen.routeName,
-    (route) => false,
-  );
 }

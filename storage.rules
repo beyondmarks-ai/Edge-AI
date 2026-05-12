@@ -1,0 +1,40 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc(uid) {
+      return firestore.get(/databases/(default)/documents/users/$(uid));
+    }
+
+    function isApprovedAdmin() {
+      return signedIn()
+        && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+        && userDoc(request.auth.uid).data.role == 'admin'
+        && userDoc(request.auth.uid).data.status == 'approved';
+    }
+
+    match /verification_docs/{userId}/{fileName} {
+      allow write: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.size < 10 * 1024 * 1024;
+      allow read: if signedIn() && (request.auth.uid == userId || isApprovedAdmin());
+    }
+
+    match /attendance_student_images/{studentId}/{fileName} {
+      allow write: if isApprovedAdmin()
+        && request.resource.size < 10 * 1024 * 1024;
+      allow read: if isApprovedAdmin();
+    }
+
+    match /student_attendance_images/{userId}/{fileName} {
+      allow write: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.size < 10 * 1024 * 1024;
+      allow read: if signedIn() && (request.auth.uid == userId || isApprovedAdmin());
+    }
+  }
+}
